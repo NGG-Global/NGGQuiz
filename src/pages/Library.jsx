@@ -17,7 +17,7 @@ export default function Library({ user }) {
     async function load() {
       const { data, error } = await supabase
         .from('quizzes')
-        .select('id, owner_id, title, subtitle, updated_at, questions(count)')
+        .select('id, owner_id, title, subtitle, logo_url, updated_at, questions(count)')
         .order('updated_at', { ascending: false })
       if (cancelled) return
       if (error) setError('טעינת ספריית החידונים נכשלה.')
@@ -85,6 +85,7 @@ export default function Library({ user }) {
             const isOwner = quiz.owner_id === user?.id
             return (
               <div className="card quiz-card" key={quiz.id}>
+                {quiz.logo_url && <img className="quiz-logo-thumb" src={quiz.logo_url} alt="לוגו הלקוח" />}
                 <h3>{quiz.title}</h3>
                 {quiz.subtitle && <p className="muted">{quiz.subtitle}</p>}
                 <p className="muted small">{count} שאלות</p>

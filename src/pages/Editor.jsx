@@ -1,11 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { supabase } from '../supabaseClient'
 
-const TIME_LIMITS = [10, 20, 30, 60]
-
 function blankQuestion() {
-  return { text: '', options: ['', '', '', ''], correct_index: 0, time_limit: 20 }
+  return { text: '', options: ['', '', '', ''], correct_index: 0 }
 }
 
 export default function Editor({ user }) {
@@ -15,10 +13,13 @@ export default function Editor({ user }) {
 
   const [title, setTitle] = useState('')
   const [subtitle, setSubtitle] = useState('')
+  const [logoUrl, setLogoUrl] = useState('')
   const [questions, setQuestions] = useState([blankQuestion()])
   const [loading, setLoading] = useState(!isNew)
   const [saving, setSaving] = useState(false)
+  const [uploading, setUploading] = useState(false)
   const [error, setError] = useState('')
+  const fileInput = useRef(null)
 
   useEffect(() => {
     if (isNew) return
@@ -41,13 +42,13 @@ export default function Editor({ user }) {
       }
       setTitle(quiz.title)
       setSubtitle(quiz.subtitle || '')
+      setLogoUrl(quiz.logo_url || '')
       setQuestions(
         qs.length
           ? qs.map((q) => ({
               text: q.text,
               options: [...q.options, '', '', ''].slice(0, Math.max(q.options.length, 2)),
               correct_index: q.correct_index,
-              time_limit: q.time_limit,
             }))
           : [blankQuestion()]
       )
@@ -83,6 +84,26 @@ export default function Editor({ user }) {
     setQuestions((qs) => (qs.length > 1 ? qs.filter((_, i) => i !== index) : qs))
   }
 
+  async function uploadLogo(file) {
+    if (!file) return
+    if (file.size > 2 * 1024 * 1024) {
+      setError('קובץ הלוגו גדול מדי (מקסימום 2MB).')
+      return
+    }
+    setError('')
+    setUploading(true)
+    const ext = (file.name.split('.').pop() || 'png').toLowerCase()
+    const path = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`
+    const { error: upErr } = await supabase.storage.from('logos').upload(path, file)
+    setUploading(false)
+    if (upErr) {
+      setError('העלאת הלוגו נכשלה. ודאו שהסכמה העדכנית הורצה ב-Supabase (bucket בשם logos).')
+      return
+    }
+    const { data } = supabase.storage.from('logos').getPublicUrl(path)
+    setLogoUrl(data.publicUrl)
+  }
+
   function validate() {
     if (!title.trim()) return 'יש להזין כותרת לחידון.'
     for (let i = 0; i < questions.length; i++) {
@@ -105,13 +126,15 @@ export default function Editor({ user }) {
     setError('')
     setSaving(true)
 
+    const quizFields = {
+      title: title.trim(),
+      subtitle: subtitle.trim() || null,
+      logo_url: logoUrl || null,
+    }
+
     let id = quizId
     if (isNew) {
-      const { data, error } = await supabase
-        .from('quizzes')
-        .insert({ title: title.trim(), subtitle: subtitle.trim() || null })
-        .select('id')
-        .single()
+      const { data, error } = await supabase.from('quizzes').insert(quizFields).select('id').single()
       if (error) {
         setError('שמירת החידון נכשלה.')
         setSaving(false)
@@ -119,10 +142,7 @@ export default function Editor({ user }) {
       }
       id = data.id
     } else {
-      const { error } = await supabase
-        .from('quizzes')
-        .update({ title: title.trim(), subtitle: subtitle.trim() || null })
-        .eq('id', id)
+      const { error } = await supabase.from('quizzes').update(quizFields).eq('id', id)
       if (error) {
         setError('שמירת החידון נכשלה.')
         setSaving(false)
@@ -147,7 +167,6 @@ export default function Editor({ user }) {
         text: q.text.trim(),
         options: kept,
         correct_index: correct,
-        time_limit: q.time_limit,
       }
     })
 
@@ -189,6 +208,35 @@ export default function Editor({ user }) {
           תת-כותרת
           <input value={subtitle} onChange={(e) => setSubtitle(e.target.value)} placeholder="לדוגמה: מחלקת הנדסה, 2026" />
         </label>
+
+        <div className="logo-field">
+          <span className="field-title">לוגו הלקוח (יוצג במסך הפתיחה)</span>
+          {logoUrl ? (
+            <div className="logo-preview">
+              <img src={logoUrl} alt="לוגו הלקוח" />
+              <div className="row">
+                <button className="btn" onClick={() => fileInput.current?.click()} disabled={uploading}>
+                  החלפת לוגו
+                </button>
+                <button className="btn ghost danger" onClick={() => setLogoUrl('')}>הסרה</button>
+              </div>
+            </div>
+          ) : (
+            <button className="btn" onClick={() => fileInput.current?.click()} disabled={uploading}>
+              {uploading ? 'מעלה...' : '+ העלאת לוגו'}
+            </button>
+          )}
+          <input
+            ref={fileInput}
+            type="file"
+            accept="image/png,image/jpeg,image/svg+xml,image/webp"
+            style={{ display: 'none' }}
+            onChange={(e) => {
+              uploadLogo(e.target.files?.[0])
+              e.target.value = ''
+            }}
+          />
+        </div>
       </div>
 
       {questions.map((q, i) => (
@@ -227,18 +275,6 @@ export default function Editor({ user }) {
             ))}
           </div>
           <p className="muted small">סמנו בעיגול את התשובה הנכונה.</p>
-
-          <label className="inline-label">
-            זמן לשאלה:
-            <select
-              value={q.time_limit}
-              onChange={(e) => updateQuestion(i, { time_limit: Number(e.target.value) })}
-            >
-              {TIME_LIMITS.map((t) => (
-                <option key={t} value={t}>{t} שניות</option>
-              ))}
-            </select>
-          </label>
         </div>
       ))}
 

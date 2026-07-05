@@ -3,8 +3,9 @@ import { useNavigate, useParams } from 'react-router-dom'
 import QRCode from 'qrcode'
 import { supabase } from '../supabaseClient'
 import { playLink } from '../lib/links'
-import Countdown from '../components/Countdown.jsx'
-import { OPTION_COLORS, OPTION_SHAPES } from '../lib/optionStyle'
+import Elapsed from '../components/Elapsed.jsx'
+import Confetti from '../components/Confetti.jsx'
+import { OPTION_SHAPES } from '../lib/optionStyle'
 
 export default function Host({ user }) {
   const { sessionId } = useParams()
@@ -41,7 +42,7 @@ export default function Host({ user }) {
       }
       setSession(s)
       const [{ data: q }, { data: qs }, { data: ps }] = await Promise.all([
-        supabase.from('quizzes').select('title, subtitle').eq('id', s.quiz_id).single(),
+        supabase.from('quizzes').select('title, subtitle, logo_url').eq('id', s.quiz_id).single(),
         supabase.from('questions').select('*').eq('quiz_id', s.quiz_id).order('position'),
         supabase.from('players').select('*').eq('session_id', sessionId).order('joined_at'),
       ])
@@ -119,20 +120,12 @@ export default function Host({ user }) {
   async function reveal() {
     if (!isHost || !currentQuestion || revealDone.current === currentQuestion.id) return
     revealDone.current = currentQuestion.id
-    await supabase.from('game_sessions').update({ status: 'reveal' }).eq('id', sessionId)
-  }
-
-  // auto-reveal when everyone answered
-  useEffect(() => {
-    if (
-      isHost &&
-      session?.status === 'question' &&
-      players.length > 0 &&
-      currentAnswers.length >= players.length
-    ) {
-      reveal()
+    const { error } = await supabase.from('game_sessions').update({ status: 'reveal' }).eq('id', sessionId)
+    if (error) {
+      revealDone.current = null
+      setError('רק מנהל המפגש יכול לשלוט בחידון. ודאו שאתם מחוברים לחשבון המתאים.')
     }
-  }, [currentAnswers.length, players.length, session?.status]) // eslint-disable-line react-hooks/exhaustive-deps
+  }
 
   async function startQuestion(index) {
     const { error } = await supabase.rpc('start_question', { p_session: sessionId, p_index: index })
@@ -155,18 +148,21 @@ export default function Host({ user }) {
       {error && <div className="error-box floating">{error}</div>}
 
       {session.status === 'lobby' && (
-        <div className="stage-inner">
+        <div className="stage-inner" key="lobby">
+          {quiz.logo_url && <img className="client-logo" src={quiz.logo_url} alt="לוגו הלקוח" />}
           <h1 className="stage-title">{quiz.title}</h1>
           {quiz.subtitle && <h2 className="stage-subtitle">{quiz.subtitle}</h2>}
-          <div className="pin-banner big">
+          <div className="pin-banner big glow">
             קוד הצטרפות: <span className="pin">{session.pin}</span>
           </div>
           <p className="join-url" dir="ltr">{playLink(session.pin)}</p>
           {qr && <img className="qr-big" src={qr} alt="קוד QR להצטרפות" />}
           <h3>משתתפים ({players.length})</h3>
           <div className="player-chips">
-            {players.map((p) => <span className="chip" key={p.id}>{p.nickname}</span>)}
-            {players.length === 0 && <span className="muted">ממתינים למצטרפים...</span>}
+            {players.map((p, i) => (
+              <span className="chip pop" style={{ '--i': i % 12 }} key={p.id}>{p.nickname}</span>
+            ))}
+            {players.length === 0 && <span className="waiting-dots">ממתינים למצטרפים</span>}
           </div>
           {isHost && (
             <button
@@ -181,33 +177,31 @@ export default function Host({ user }) {
       )}
 
       {session.status === 'question' && currentQuestion && (
-        <div className="stage-inner">
+        <div className="stage-inner" key={`q-${session.current_index}`}>
           <div className="question-meta">
-            <span>שאלה {session.current_index + 1} מתוך {questions.length}</span>
-            <Countdown
-              startedAt={session.question_started_at}
-              seconds={currentQuestion.time_limit}
-              onDone={reveal}
-            />
-            <span>ענו: {currentAnswers.length}/{players.length}</span>
+            <span className="meta-pill">שאלה {session.current_index + 1} / {questions.length}</span>
+            <Elapsed since={session.question_started_at} />
+            <span className="meta-pill">ענו: {currentAnswers.length}/{players.length}</span>
           </div>
           <h1 className="stage-title">{currentQuestion.text}</h1>
           <div className="options-grid">
             {currentQuestion.options.map((opt, i) => (
-              <div className={`option-tile color-${i}`} key={i}>
+              <div className={`option-tile color-${i}`} style={{ '--i': i }} key={i}>
                 <span className="shape">{OPTION_SHAPES[i]}</span>
                 <span>{opt}</span>
               </div>
             ))}
           </div>
           {isHost && (
-            <button className="btn ghost" onClick={reveal}>חשיפת התשובה עכשיו</button>
+            <button className="btn light xl" onClick={reveal}>
+              חשיפת התשובה
+            </button>
           )}
         </div>
       )}
 
       {session.status === 'reveal' && currentQuestion && (
-        <div className="stage-inner">
+        <div className="stage-inner" key={`r-${session.current_index}`}>
           <h1 className="stage-title">{currentQuestion.text}</h1>
           <div className="options-grid">
             {currentQuestion.options.map((opt, i) => {
@@ -217,11 +211,11 @@ export default function Host({ user }) {
               ))
               const correct = i === currentQuestion.correct_index
               return (
-                <div className={`option-tile color-${i} ${correct ? 'correct' : 'dimmed'}`} key={i}>
+                <div className={`option-tile color-${i} ${correct ? 'correct' : 'dimmed'}`} style={{ '--i': i }} key={i}>
                   <span className="shape">{OPTION_SHAPES[i]}</span>
                   <span>{opt} {correct && '✓'}</span>
                   <div className="bar-track">
-                    <div className="bar" style={{ width: `${(count / max) * 100}%`, background: OPTION_COLORS[i] }} />
+                    <div className="bar" style={{ width: `${(count / max) * 100}%` }} />
                   </div>
                   <span className="count">{count}</span>
                 </div>
@@ -229,19 +223,30 @@ export default function Host({ user }) {
             })}
           </div>
           {isHost && (
-            <button className="btn primary xl" onClick={() => setStatus('leaderboard')}>
-              טבלת המובילים
-            </button>
+            <div className="row center-row">
+              <button className="btn light xl" onClick={() => setStatus('leaderboard')}>
+                טבלת המובילים
+              </button>
+              {isLast ? (
+                <button className="btn primary xl" onClick={() => setStatus('finished')}>
+                  לתוצאות הסופיות
+                </button>
+              ) : (
+                <button className="btn primary xl" onClick={() => startQuestion(session.current_index + 1)}>
+                  השאלה הבאה
+                </button>
+              )}
+            </div>
           )}
         </div>
       )}
 
       {session.status === 'leaderboard' && (
-        <div className="stage-inner">
+        <div className="stage-inner" key={`l-${session.current_index}`}>
           <h1 className="stage-title">טבלת המובילים</h1>
           <ol className="leaderboard">
             {sorted.slice(0, 10).map((p, i) => (
-              <li key={p.id} className={i < 3 ? `top-${i + 1}` : ''}>
+              <li key={p.id} style={{ '--i': i }} className={i < 3 ? `top-${i + 1}` : ''}>
                 <span className="rank">{i + 1}</span>
                 <span className="name">{p.nickname}</span>
                 <span className="score">{p.score}</span>
@@ -263,12 +268,16 @@ export default function Host({ user }) {
       )}
 
       {session.status === 'finished' && (
-        <div className="stage-inner">
-          <h1 className="stage-title">🏆 {quiz.title} - תוצאות סופיות</h1>
+        <div className="stage-inner" key="finished">
+          <Confetti />
+          {quiz.logo_url && <img className="client-logo small" src={quiz.logo_url} alt="לוגו הלקוח" />}
+          <h1 className="stage-title">🏆 {quiz.title}</h1>
+          <h2 className="stage-subtitle">התוצאות הסופיות</h2>
           <div className="podium">
             {[1, 0, 2].map((rank) =>
               sorted[rank] ? (
                 <div className={`podium-slot place-${rank + 1}`} key={sorted[rank].id}>
+                  <div className="podium-medal">{['🥇', '🥈', '🥉'][rank]}</div>
                   <div className="podium-name">{sorted[rank].nickname}</div>
                   <div className="podium-block">
                     <div className="podium-rank">{rank + 1}</div>
@@ -278,17 +287,19 @@ export default function Host({ user }) {
               ) : null
             )}
           </div>
-          <ol className="leaderboard">
-            {sorted.slice(3, 10).map((p, i) => (
-              <li key={p.id}>
-                <span className="rank">{i + 4}</span>
-                <span className="name">{p.nickname}</span>
-                <span className="score">{p.score}</span>
-              </li>
-            ))}
-          </ol>
+          {sorted.length > 3 && (
+            <ol className="leaderboard compact">
+              {sorted.slice(3, 10).map((p, i) => (
+                <li key={p.id} style={{ '--i': i }}>
+                  <span className="rank">{i + 4}</span>
+                  <span className="name">{p.nickname}</span>
+                  <span className="score">{p.score}</span>
+                </li>
+              ))}
+            </ol>
+          )}
           {isHost && (
-            <button className="btn ghost" onClick={() => navigate('/')}>חזרה לספרייה</button>
+            <button className="btn ghost light-ghost" onClick={() => navigate('/')}>חזרה לספרייה</button>
           )}
         </div>
       )}

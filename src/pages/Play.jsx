@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { supabase } from '../supabaseClient'
-import Countdown from '../components/Countdown.jsx'
 import { OPTION_SHAPES } from '../lib/optionStyle'
 
 function storageKey(pin) {
@@ -54,7 +53,7 @@ export default function Play() {
     let cancelled = false
     supabase
       .from('questions')
-      .select('id, text, options, time_limit, position')
+      .select('id, text, options, position')
       .eq('quiz_id', session.quiz_id)
       .order('position')
       .then(({ data }) => { if (!cancelled && data) setQuestions(data) })
@@ -197,10 +196,9 @@ export default function Play() {
       )}
 
       {session.status === 'question' && currentQuestion && (
-        <div className="stage-inner full">
+        <div className="stage-inner full" key={`q-${session.current_index}`}>
           <div className="question-meta">
-            <span>שאלה {session.current_index + 1}</span>
-            <Countdown startedAt={session.question_started_at} seconds={currentQuestion.time_limit} />
+            <span className="meta-pill">שאלה {session.current_index + 1}</span>
           </div>
           {myAnswer ? (
             <div className="wait-note">
@@ -212,7 +210,7 @@ export default function Play() {
               <h2 className="player-question">{currentQuestion.text}</h2>
               <div className="options-grid player">
                 {currentQuestion.options.map((opt, i) => (
-                  <button className={`option-tile clickable color-${i}`} key={i} onClick={() => answer(i)}>
+                  <button className={`option-tile clickable color-${i}`} style={{ '--i': i }} key={i} onClick={() => answer(i)}>
                     <span className="shape">{OPTION_SHAPES[i]}</span>
                     <span>{opt}</span>
                   </button>
@@ -224,7 +222,7 @@ export default function Play() {
       )}
 
       {session.status === 'reveal' && (
-        <div className="stage-inner">
+        <div className="stage-inner" key={`r-${session.current_index}`}>
           {!myAnswer || myAnswer.pending ? (
             <h1 className="stage-title">לא נקלטה תשובה הפעם 😅</h1>
           ) : myAnswer.is_correct ? (
@@ -240,7 +238,7 @@ export default function Play() {
       )}
 
       {session.status === 'leaderboard' && (
-        <div className="stage-inner">
+        <div className="stage-inner" key={`l-${session.current_index}`}>
           <h1 className="stage-title">המצב שלך</h1>
           {rankInfo && (
             <>

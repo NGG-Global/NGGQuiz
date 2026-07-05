@@ -14,6 +14,7 @@ create table if not exists public.quizzes (
   owner_id uuid not null default auth.uid() references auth.users(id),
   title text not null,
   subtitle text,
+  logo_url text,                   -- client logo shown on the opening screen
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -24,8 +25,7 @@ create table if not exists public.questions (
   position int not null,
   text text not null,
   options jsonb not null,          -- array of 2-4 answer strings
-  correct_index int not null,
-  time_limit int not null default 20   -- seconds
+  correct_index int not null
 );
 
 create table if not exists public.game_sessions (
@@ -63,8 +63,9 @@ create table if not exists public.answers (
 
 -- ------------------------------------------------------------
 -- Scoring: computed on the server so clients cannot tamper.
--- Correct answer earns 500-1000 points, scaled by answer speed:
--- instant answer -> 1000, answer at the time limit -> 500.
+-- There is no time limit; speed still matters. A correct answer
+-- earns 500-1000 points with an exponential decay by response
+-- time (instant -> 1000, ~30s -> ~684, several minutes -> ~500).
 -- ------------------------------------------------------------
 
 create or replace function public.score_answer()
@@ -78,7 +79,7 @@ declare
   s record;
   elapsed numeric;
 begin
-  select correct_index, time_limit into q from public.questions where id = new.question_id;
+  select correct_index into q from public.questions where id = new.question_id;
   select status, question_started_at, current_index into s from public.game_sessions where id = new.session_id;
 
   if s.status is distinct from 'question' then
@@ -88,9 +89,8 @@ begin
   new.is_correct := (new.answer_index = q.correct_index);
 
   if new.is_correct then
-    elapsed := extract(epoch from (now() - s.question_started_at));
-    elapsed := greatest(0, least(elapsed, q.time_limit));
-    new.points := round(500 + 500 * (1 - elapsed / q.time_limit));
+    elapsed := greatest(0, extract(epoch from (now() - s.question_started_at)));
+    new.points := round(500 + 500 * exp(-elapsed / 30.0));
   else
     new.points := 0;
   end if;
@@ -224,6 +224,22 @@ create policy "answers_insert" on public.answers
     exists (select 1 from public.game_sessions s
             where s.id = session_id and s.status = 'question')
   );
+
+-- ------------------------------------------------------------
+-- Storage: public bucket for client logos
+-- ------------------------------------------------------------
+
+insert into storage.buckets (id, name, public)
+values ('logos', 'logos', true)
+on conflict (id) do nothing;
+
+drop policy if exists "logos_read" on storage.objects;
+create policy "logos_read" on storage.objects
+  for select using (bucket_id = 'logos');
+
+drop policy if exists "logos_write" on storage.objects;
+create policy "logos_write" on storage.objects
+  for insert to authenticated with check (bucket_id = 'logos');
 
 -- ------------------------------------------------------------
 -- Realtime: broadcast changes for the live game screens
