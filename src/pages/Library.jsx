@@ -92,7 +92,7 @@ export default function Library({ user }) {
   async function moveQuiz(quiz, folderId) {
     const { error } = await supabase.from('quizzes').update({ folder_id: folderId }).eq('id', quiz.id)
     if (error) {
-      setError('העברת החידון נכשלה. ניתן להעביר רק חידונים שיצרתם בעצמכם.')
+      setError('העברת החידון נכשלה.')
       return
     }
     setQuizzes((qs) => qs.map((q) => (q.id === quiz.id ? { ...q, folder_id: folderId } : q)))
@@ -211,11 +211,9 @@ export default function Library({ user }) {
                   )}
                 </p>
                 <div className="row">
-                  {isOwner && (
-                    <button className="btn" onClick={() => navigate(`/edit/${quiz.id}`)}>
-                      עריכה
-                    </button>
-                  )}
+                  <button className="btn" onClick={() => navigate(`/edit/${quiz.id}`)}>
+                    עריכה
+                  </button>
                   <button
                     className="btn primary"
                     disabled={count === 0 || startingId === quiz.id}
@@ -225,23 +223,23 @@ export default function Library({ user }) {
                     {startingId === quiz.id ? 'מפעיל...' : 'הפעלה'}
                   </button>
                 </div>
-                {isOwner && (
-                  <div className="row card-manage">
-                    <select
-                      value={quiz.folder_id || ''}
-                      onChange={(e) => moveQuiz(quiz, e.target.value || null)}
-                      title="העברה לתיקייה"
-                    >
-                      <option value="">ללא תיקייה</option>
-                      {folders.map((f) => (
-                        <option key={f.id} value={f.id}>{f.name}</option>
-                      ))}
-                    </select>
+                <div className="row card-manage">
+                  <select
+                    value={quiz.folder_id || ''}
+                    onChange={(e) => moveQuiz(quiz, e.target.value || null)}
+                    title="העברה לתיקייה"
+                  >
+                    <option value="">ללא תיקייה</option>
+                    {folders.map((f) => (
+                      <option key={f.id} value={f.id}>{f.name}</option>
+                    ))}
+                  </select>
+                  {isOwner && (
                     <button className="btn ghost danger" onClick={() => deleteQuiz(quiz)}>
                       מחיקה
                     </button>
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
             )
           })}

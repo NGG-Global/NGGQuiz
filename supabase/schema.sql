@@ -245,7 +245,8 @@ drop policy if exists "folders_delete" on public.folders;
 create policy "folders_delete" on public.folders
   for delete to authenticated using (owner_id = auth.uid());
 
--- quizzes: shared library (all can read), only the owner edits
+-- quizzes: shared library - every admin can read and edit every
+-- quiz; deletion stays with the quiz owner
 drop policy if exists "quizzes_select" on public.quizzes;
 create policy "quizzes_select" on public.quizzes
   for select using (true);
@@ -254,27 +255,25 @@ create policy "quizzes_insert" on public.quizzes
   for insert to authenticated with check (public.is_admin() and owner_id = auth.uid());
 drop policy if exists "quizzes_update" on public.quizzes;
 create policy "quizzes_update" on public.quizzes
-  for update to authenticated using (owner_id = auth.uid());
+  for update to authenticated using (public.is_admin());
 drop policy if exists "quizzes_delete" on public.quizzes;
 create policy "quizzes_delete" on public.quizzes
   for delete to authenticated using (owner_id = auth.uid());
 
--- questions: readable by all (players need option texts), owner edits
+-- questions: readable by all (players need option texts),
+-- editable by every admin (part of editing any quiz)
 drop policy if exists "questions_select" on public.questions;
 create policy "questions_select" on public.questions
   for select using (true);
 drop policy if exists "questions_insert" on public.questions;
 create policy "questions_insert" on public.questions
-  for insert to authenticated
-  with check (exists (select 1 from public.quizzes q where q.id = quiz_id and q.owner_id = auth.uid()));
+  for insert to authenticated with check (public.is_admin());
 drop policy if exists "questions_update" on public.questions;
 create policy "questions_update" on public.questions
-  for update to authenticated
-  using (exists (select 1 from public.quizzes q where q.id = quiz_id and q.owner_id = auth.uid()));
+  for update to authenticated using (public.is_admin());
 drop policy if exists "questions_delete" on public.questions;
 create policy "questions_delete" on public.questions
-  for delete to authenticated
-  using (exists (select 1 from public.quizzes q where q.id = quiz_id and q.owner_id = auth.uid()));
+  for delete to authenticated using (public.is_admin());
 
 -- game sessions: anyone can look up by PIN, only the host controls
 drop policy if exists "sessions_select" on public.game_sessions;

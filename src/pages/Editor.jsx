@@ -45,11 +45,6 @@ export default function Editor({ user }) {
         setLoading(false)
         return
       }
-      if (quiz.owner_id !== user?.id) {
-        setError('ניתן לערוך רק חידונים שיצרתם בעצמכם.')
-        setLoading(false)
-        return
-      }
       setTitle(quiz.title)
       setSubtitle(quiz.subtitle || '')
       setLogoUrl(quiz.logo_url || '')
@@ -68,7 +63,7 @@ export default function Editor({ user }) {
     }
     load()
     return () => { cancelled = true }
-  }, [quizId, isNew, user?.id])
+  }, [quizId, isNew])
 
   function updateQuestion(index, patch) {
     setQuestions((qs) => qs.map((q, i) => (i === index ? { ...q, ...patch } : q)))
