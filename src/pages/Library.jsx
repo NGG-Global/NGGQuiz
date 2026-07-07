@@ -6,14 +6,22 @@ function generatePin() {
   return String(Math.floor(100000 + Math.random() * 900000))
 }
 
+const FOLDER_COLORS = [
+  '#7c3aed', '#2563eb', '#0d9488', '#16a34a',
+  '#d97706', '#dc2626', '#db2777', '#64748b',
+]
+const DEFAULT_FOLDER_COLOR = '#64748b'
+
 export default function Library({ user }) {
   const [quizzes, setQuizzes] = useState(null)
   const [folders, setFolders] = useState([])
   const [filter, setFilter] = useState('all') // 'all' | 'none' | folder id
   const [newFolderOpen, setNewFolderOpen] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
+  const [newFolderColor, setNewFolderColor] = useState(FOLDER_COLORS[0])
   const [error, setError] = useState('')
   const [startingId, setStartingId] = useState(null)
+  const [duplicatingId, setDuplicatingId] = useState(null)
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -63,7 +71,11 @@ export default function Library({ user }) {
     e.preventDefault()
     const name = newFolderName.trim()
     if (!name) return
-    const { data, error } = await supabase.from('folders').insert({ name }).select().single()
+    const { data, error } = await supabase
+      .from('folders')
+      .insert({ name, color: newFolderColor })
+      .select()
+      .single()
     if (error) {
       setError('יצירת התיקייה נכשלה.')
       return
@@ -87,6 +99,49 @@ export default function Library({ user }) {
     setFolders((fs) => fs.filter((f) => f.id !== folder.id))
     setQuizzes((qs) => qs.map((q) => (q.folder_id === folder.id ? { ...q, folder_id: null } : q)))
     if (filter === folder.id) setFilter('all')
+  }
+
+  async function setFolderColor(folder, color) {
+    const { error } = await supabase.from('folders').update({ color }).eq('id', folder.id)
+    if (error) {
+      setError('עדכון צבע התיקייה נכשל. ניתן לעדכן רק תיקיות שיצרתם בעצמכם.')
+      return
+    }
+    setFolders((fs) => fs.map((f) => (f.id === folder.id ? { ...f, color } : f)))
+  }
+
+  async function duplicateQuiz(quiz) {
+    setError('')
+    setDuplicatingId(quiz.id)
+    const { data: newQuiz, error } = await supabase
+      .from('quizzes')
+      .insert({
+        title: `${quiz.title} (עותק)`,
+        subtitle: quiz.subtitle,
+        logo_url: quiz.logo_url,
+        folder_id: quiz.folder_id,
+      })
+      .select('id, owner_id, folder_id, title, subtitle, logo_url, updated_at')
+      .single()
+    if (error) {
+      setError('שכפול החידון נכשל.')
+      setDuplicatingId(null)
+      return
+    }
+    const { data: qs, error: qErr } = await supabase
+      .from('questions')
+      .select('position, text, options, correct_index, explanation')
+      .eq('quiz_id', quiz.id)
+    let copied = 0
+    if (!qErr && qs?.length) {
+      const { error: insErr } = await supabase
+        .from('questions')
+        .insert(qs.map((q) => ({ ...q, quiz_id: newQuiz.id })))
+      if (insErr) setError('החידון שוכפל, אך העתקת השאלות נכשלה. פתחו את העותק לעריכה.')
+      else copied = qs.length
+    }
+    setQuizzes((list) => [{ ...newQuiz, questions: [{ count: copied }] }, ...list])
+    setDuplicatingId(null)
   }
 
   async function moveQuiz(quiz, folderId) {
@@ -121,7 +176,8 @@ export default function Library({ user }) {
       : quizzes.filter((q) =>
           filter === 'all' ? true : filter === 'none' ? !q.folder_id : q.folder_id === filter
         )
-  const folderName = (id) => folders.find((f) => f.id === id)?.name
+  const folderOf = (id) => folders.find((f) => f.id === id)
+  const activeFolder = folders.find((f) => f.id === filter)
 
   return (
     <div className="page">
@@ -144,27 +200,33 @@ export default function Library({ user }) {
         <button className={`chip-btn ${filter === 'all' ? 'active' : ''}`} onClick={() => setFilter('all')}>
           הכל
         </button>
-        {folders.map((f) => (
-          <button
-            key={f.id}
-            className={`chip-btn ${filter === f.id ? 'active' : ''}`}
-            onClick={() => setFilter(f.id)}
-          >
-            📁 {f.name}
-            {f.owner_id === user?.id && (
-              <span
-                className="chip-x"
-                title="מחיקת תיקייה"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  deleteFolder(f)
-                }}
-              >
-                ✕
-              </span>
-            )}
-          </button>
-        ))}
+        {folders.map((f) => {
+          const color = f.color || DEFAULT_FOLDER_COLOR
+          const isActive = filter === f.id
+          return (
+            <button
+              key={f.id}
+              className={`chip-btn ${isActive ? 'active' : ''}`}
+              style={isActive ? { background: color, borderColor: color } : { borderColor: `${color}66` }}
+              onClick={() => setFilter(f.id)}
+            >
+              <span className="dot" style={{ background: isActive ? '#fff' : color }} />
+              {f.name}
+              {f.owner_id === user?.id && (
+                <span
+                  className="chip-x"
+                  title="מחיקת תיקייה"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    deleteFolder(f)
+                  }}
+                >
+                  ✕
+                </span>
+              )}
+            </button>
+          )
+        })}
         <button className={`chip-btn ${filter === 'none' ? 'active' : ''}`} onClick={() => setFilter('none')}>
           ללא תיקייה
         </button>
@@ -182,8 +244,37 @@ export default function Library({ user }) {
             maxLength={40}
             autoFocus
           />
+          <div className="row swatch-row">
+            {FOLDER_COLORS.map((c) => (
+              <button
+                type="button"
+                key={c}
+                className={`swatch ${newFolderColor === c ? 'on' : ''}`}
+                style={{ background: c }}
+                title="בחירת צבע"
+                onClick={() => setNewFolderColor(c)}
+              />
+            ))}
+          </div>
           <button className="btn primary">יצירה</button>
         </form>
+      )}
+
+      {activeFolder && activeFolder.owner_id === user?.id && (
+        <div className="row color-row">
+          <span className="muted small">צבע התיקייה:</span>
+          <div className="row swatch-row">
+            {FOLDER_COLORS.map((c) => (
+              <button
+                type="button"
+                key={c}
+                className={`swatch ${(activeFolder.color || DEFAULT_FOLDER_COLOR) === c ? 'on' : ''}`}
+                style={{ background: c }}
+                onClick={() => setFolderColor(activeFolder, c)}
+              />
+            ))}
+          </div>
+        </div>
       )}
 
       {error && <div className="error-box">{error}</div>}
@@ -206,8 +297,16 @@ export default function Library({ user }) {
                 {quiz.subtitle && <p className="muted">{quiz.subtitle}</p>}
                 <p className="muted small">
                   {count} שאלות
-                  {filter === 'all' && quiz.folder_id && folderName(quiz.folder_id) && (
-                    <span className="folder-badge">📁 {folderName(quiz.folder_id)}</span>
+                  {filter === 'all' && quiz.folder_id && folderOf(quiz.folder_id) && (
+                    <span
+                      className="folder-badge"
+                      style={{
+                        background: `${folderOf(quiz.folder_id).color || DEFAULT_FOLDER_COLOR}1f`,
+                        color: folderOf(quiz.folder_id).color || DEFAULT_FOLDER_COLOR,
+                      }}
+                    >
+                      ● {folderOf(quiz.folder_id).name}
+                    </span>
                   )}
                 </p>
                 <div className="row">
@@ -234,6 +333,14 @@ export default function Library({ user }) {
                       <option key={f.id} value={f.id}>{f.name}</option>
                     ))}
                   </select>
+                  <button
+                    className="btn ghost"
+                    disabled={duplicatingId === quiz.id}
+                    title="יצירת עותק של החידון"
+                    onClick={() => duplicateQuiz(quiz)}
+                  >
+                    {duplicatingId === quiz.id ? 'משכפל...' : 'צור עותק'}
+                  </button>
                   {isOwner && (
                     <button className="btn ghost danger" onClick={() => deleteQuiz(quiz)}>
                       מחיקה

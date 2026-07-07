@@ -124,7 +124,7 @@ code { background: #eceef4; padding: 0 4px; border-radius: 4px; direction: ltr; 
 .card-manage { margin-top: 10px; padding-top: 10px; border-top: 1px solid #eceef4; }
 .card-manage select { flex: 1; width: auto; padding: 7px 10px; font-size: 0.9rem; }
 .folder-badge {
-  background: #eee7fa; color: var(--primary); border-radius: 999px;
+  border-radius: 999px;
   padding: 2px 10px; margin-inline-start: 8px; font-weight: 600;
 }
 
@@ -143,6 +143,17 @@ code { background: #eceef4; padding: 0 4px; border-radius: 4px; direction: ltr; 
 .chip-x:hover { opacity: 1; }
 .new-folder-form { margin-bottom: 14px; }
 .new-folder-form input { max-width: 280px; }
+
+.dot { width: 11px; height: 11px; border-radius: 50%; flex: none; }
+.swatch-row { gap: 6px; }
+.swatch {
+  width: 24px; height: 24px; border-radius: 50%; flex: none;
+  border: 2px solid transparent; cursor: pointer; padding: 0;
+  transition: transform 0.1s, box-shadow 0.15s;
+}
+.swatch:hover { transform: scale(1.12); }
+.swatch.on { box-shadow: 0 0 0 2.5px #fff, 0 0 0 5px var(--text); }
+.color-row { margin-bottom: 14px; }
 
 /* ---------- forms ---------- */
 

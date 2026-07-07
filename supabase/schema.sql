@@ -18,6 +18,7 @@ create table if not exists public.folders (
   id uuid primary key default gen_random_uuid(),
   owner_id uuid not null default auth.uid() references auth.users(id),
   name text not null,
+  color text,                      -- hex color used to label the folder
   created_at timestamptz not null default now()
 );
 
@@ -77,6 +78,7 @@ create table if not exists public.answers (
 
 -- convergence guards: bring tables created by older versions of this
 -- file up to the current shape (no-ops on a fresh database)
+alter table public.folders add column if not exists color text;
 alter table public.quizzes add column if not exists logo_url text;
 alter table public.quizzes add column if not exists folder_id uuid references public.folders(id) on delete set null;
 alter table public.questions add column if not exists explanation text;
