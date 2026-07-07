@@ -185,9 +185,43 @@ $$;
 grant execute on function public.start_question(uuid, int) to authenticated;
 
 -- ------------------------------------------------------------
+-- Admin access: any account with an @nggconsult.com email.
+-- 1) a trigger on auth.users blocks sign-ups from other domains
+-- 2) is_admin() re-checks the domain inside the RLS policies
+-- Players never authenticate, so none of this affects them.
+-- ------------------------------------------------------------
+
+create or replace function public.is_admin()
+returns boolean
+language sql
+stable
+as $$
+  select coalesce(auth.jwt() ->> 'email', '') ilike '%@nggconsult.com'
+$$;
+
+create or replace function public.enforce_admin_email_domain()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if new.email is null or new.email not ilike '%@nggconsult.com' then
+    raise exception 'registration is limited to @nggconsult.com accounts';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists enforce_admin_email_domain on auth.users;
+create trigger enforce_admin_email_domain
+  before insert on auth.users
+  for each row execute function public.enforce_admin_email_domain();
+
+-- ------------------------------------------------------------
 -- Row Level Security
--- Admins (authenticated) manage their own quizzes and sessions.
--- Players (anon) may read game data, join a session and answer.
+-- Admins (@nggconsult.com accounts) manage their own quizzes and
+-- sessions. Players (anon) may read game data, join and answer.
 -- ------------------------------------------------------------
 
 alter table public.folders enable row level security;
@@ -203,7 +237,7 @@ create policy "folders_select" on public.folders
   for select using (true);
 drop policy if exists "folders_insert" on public.folders;
 create policy "folders_insert" on public.folders
-  for insert to authenticated with check (owner_id = auth.uid());
+  for insert to authenticated with check (public.is_admin() and owner_id = auth.uid());
 drop policy if exists "folders_update" on public.folders;
 create policy "folders_update" on public.folders
   for update to authenticated using (owner_id = auth.uid());
@@ -217,7 +251,7 @@ create policy "quizzes_select" on public.quizzes
   for select using (true);
 drop policy if exists "quizzes_insert" on public.quizzes;
 create policy "quizzes_insert" on public.quizzes
-  for insert to authenticated with check (owner_id = auth.uid());
+  for insert to authenticated with check (public.is_admin() and owner_id = auth.uid());
 drop policy if exists "quizzes_update" on public.quizzes;
 create policy "quizzes_update" on public.quizzes
   for update to authenticated using (owner_id = auth.uid());
@@ -248,7 +282,7 @@ create policy "sessions_select" on public.game_sessions
   for select using (true);
 drop policy if exists "sessions_insert" on public.game_sessions;
 create policy "sessions_insert" on public.game_sessions
-  for insert to authenticated with check (host_id = auth.uid());
+  for insert to authenticated with check (public.is_admin() and host_id = auth.uid());
 drop policy if exists "sessions_update" on public.game_sessions;
 create policy "sessions_update" on public.game_sessions
   for update to authenticated using (host_id = auth.uid());
