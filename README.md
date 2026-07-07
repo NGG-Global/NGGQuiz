@@ -22,7 +22,7 @@
 
 1. צרו פרויקט חדש ב-[supabase.com](https://supabase.com).
 2. פתחו את **SQL Editor** והריצו את תוכן הקובץ [`supabase/schema.sql`](supabase/schema.sql) - הוא יוצר את הטבלאות, חוקי האבטחה (RLS), חישוב הניקוד, אחסון הלוגואים וה-Realtime.
-   (אם הרצתם בעבר גרסה קודמת של הסכמה, הריצו במקום זאת את קובץ המיגרציה שב-`supabase/migrations/`.)
+   הסקריפט בטוח להרצה חוזרת על כל מצב של מסד הנתונים (ריק, חלקי או גרסה ישנה) - הוא משלים את החסר בלי לפגוע בנתונים. אין צורך בקבצי ה-migrations אם מריצים אותו.
 3. תחת **Authentication → Sign In / Up** מומלץ לכבות הרשמה עצמית (Disable new user signups), ולהוסיף את המנהלים ידנית דרך **Authentication → Users → Add user** (דוא"ל + סיסמה).
 4. מתוך **Project Settings → API** העתיקו את `Project URL` ואת `anon public key`.
 

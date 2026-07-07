@@ -1,6 +1,11 @@
 -- ============================================================
 -- NGG Quiz - Supabase schema
--- Run this file in the Supabase SQL Editor (one time per project).
+-- Run this file in the Supabase SQL Editor.
+-- The script is idempotent: it is safe to run repeatedly and on
+-- any database state (fresh, partial, or an older version) - it
+-- converges the database to the current shape without data loss.
+-- The files in supabase/migrations/ are NOT needed if you run
+-- this file; they exist only as standalone patches.
 -- ============================================================
 
 create extension if not exists pgcrypto;
@@ -69,6 +74,13 @@ create table if not exists public.answers (
   answered_at timestamptz not null default now(),
   unique (question_id, player_id)
 );
+
+-- convergence guards: bring tables created by older versions of this
+-- file up to the current shape (no-ops on a fresh database)
+alter table public.quizzes add column if not exists logo_url text;
+alter table public.quizzes add column if not exists folder_id uuid references public.folders(id) on delete set null;
+alter table public.questions add column if not exists explanation text;
+alter table public.questions drop column if exists time_limit;
 
 -- ------------------------------------------------------------
 -- Scoring: computed on the server so clients cannot tamper.
@@ -186,50 +198,67 @@ alter table public.players enable row level security;
 alter table public.answers enable row level security;
 
 -- folders: shared library structure, only the creator manages
+drop policy if exists "folders_select" on public.folders;
 create policy "folders_select" on public.folders
   for select using (true);
+drop policy if exists "folders_insert" on public.folders;
 create policy "folders_insert" on public.folders
   for insert to authenticated with check (owner_id = auth.uid());
+drop policy if exists "folders_update" on public.folders;
 create policy "folders_update" on public.folders
   for update to authenticated using (owner_id = auth.uid());
+drop policy if exists "folders_delete" on public.folders;
 create policy "folders_delete" on public.folders
   for delete to authenticated using (owner_id = auth.uid());
 
 -- quizzes: shared library (all can read), only the owner edits
+drop policy if exists "quizzes_select" on public.quizzes;
 create policy "quizzes_select" on public.quizzes
   for select using (true);
+drop policy if exists "quizzes_insert" on public.quizzes;
 create policy "quizzes_insert" on public.quizzes
   for insert to authenticated with check (owner_id = auth.uid());
+drop policy if exists "quizzes_update" on public.quizzes;
 create policy "quizzes_update" on public.quizzes
   for update to authenticated using (owner_id = auth.uid());
+drop policy if exists "quizzes_delete" on public.quizzes;
 create policy "quizzes_delete" on public.quizzes
   for delete to authenticated using (owner_id = auth.uid());
 
 -- questions: readable by all (players need option texts), owner edits
+drop policy if exists "questions_select" on public.questions;
 create policy "questions_select" on public.questions
   for select using (true);
+drop policy if exists "questions_insert" on public.questions;
 create policy "questions_insert" on public.questions
   for insert to authenticated
   with check (exists (select 1 from public.quizzes q where q.id = quiz_id and q.owner_id = auth.uid()));
+drop policy if exists "questions_update" on public.questions;
 create policy "questions_update" on public.questions
   for update to authenticated
   using (exists (select 1 from public.quizzes q where q.id = quiz_id and q.owner_id = auth.uid()));
+drop policy if exists "questions_delete" on public.questions;
 create policy "questions_delete" on public.questions
   for delete to authenticated
   using (exists (select 1 from public.quizzes q where q.id = quiz_id and q.owner_id = auth.uid()));
 
 -- game sessions: anyone can look up by PIN, only the host controls
+drop policy if exists "sessions_select" on public.game_sessions;
 create policy "sessions_select" on public.game_sessions
   for select using (true);
+drop policy if exists "sessions_insert" on public.game_sessions;
 create policy "sessions_insert" on public.game_sessions
   for insert to authenticated with check (host_id = auth.uid());
+drop policy if exists "sessions_update" on public.game_sessions;
 create policy "sessions_update" on public.game_sessions
   for update to authenticated using (host_id = auth.uid());
 
 -- players: anyone may join a running session; scores change only
 -- through the security-definer trigger, never directly by clients
+drop policy if exists "players_select" on public.players;
 create policy "players_select" on public.players
   for select using (true);
+drop policy if exists "players_insert" on public.players;
 create policy "players_insert" on public.players
   for insert with check (
     exists (select 1 from public.game_sessions s
@@ -237,8 +266,10 @@ create policy "players_insert" on public.players
   );
 
 -- answers: players submit while a question is open
+drop policy if exists "answers_select" on public.answers;
 create policy "answers_select" on public.answers
   for select using (true);
+drop policy if exists "answers_insert" on public.answers;
 create policy "answers_insert" on public.answers
   for insert with check (
     exists (select 1 from public.game_sessions s
@@ -265,6 +296,20 @@ create policy "logos_write" on storage.objects
 -- Realtime: broadcast changes for the live game screens
 -- ------------------------------------------------------------
 
-alter publication supabase_realtime add table public.game_sessions;
-alter publication supabase_realtime add table public.players;
-alter publication supabase_realtime add table public.answers;
+do $$
+begin
+  alter publication supabase_realtime add table public.game_sessions;
+exception when duplicate_object then null;
+end $$;
+
+do $$
+begin
+  alter publication supabase_realtime add table public.players;
+exception when duplicate_object then null;
+end $$;
+
+do $$
+begin
+  alter publication supabase_realtime add table public.answers;
+exception when duplicate_object then null;
+end $$;
