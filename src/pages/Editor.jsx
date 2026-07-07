@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { supabase } from '../supabaseClient'
 
 function blankQuestion() {
-  return { text: '', options: ['', '', '', ''], correct_index: 0 }
+  return { text: '', options: ['', '', '', ''], correct_index: 0, explanation: '' }
 }
 
 export default function Editor({ user }) {
@@ -14,12 +14,22 @@ export default function Editor({ user }) {
   const [title, setTitle] = useState('')
   const [subtitle, setSubtitle] = useState('')
   const [logoUrl, setLogoUrl] = useState('')
+  const [folderId, setFolderId] = useState('')
+  const [folders, setFolders] = useState([])
   const [questions, setQuestions] = useState([blankQuestion()])
   const [loading, setLoading] = useState(!isNew)
   const [saving, setSaving] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState('')
   const fileInput = useRef(null)
+
+  useEffect(() => {
+    let cancelled = false
+    supabase.from('folders').select('id, name').order('name').then(({ data }) => {
+      if (!cancelled && data) setFolders(data)
+    })
+    return () => { cancelled = true }
+  }, [])
 
   useEffect(() => {
     if (isNew) return
@@ -43,12 +53,14 @@ export default function Editor({ user }) {
       setTitle(quiz.title)
       setSubtitle(quiz.subtitle || '')
       setLogoUrl(quiz.logo_url || '')
+      setFolderId(quiz.folder_id || '')
       setQuestions(
         qs.length
           ? qs.map((q) => ({
               text: q.text,
               options: [...q.options, '', '', ''].slice(0, Math.max(q.options.length, 2)),
               correct_index: q.correct_index,
+              explanation: q.explanation || '',
             }))
           : [blankQuestion()]
       )
@@ -130,6 +142,7 @@ export default function Editor({ user }) {
       title: title.trim(),
       subtitle: subtitle.trim() || null,
       logo_url: logoUrl || null,
+      folder_id: folderId || null,
     }
 
     let id = quizId
@@ -167,6 +180,7 @@ export default function Editor({ user }) {
         text: q.text.trim(),
         options: kept,
         correct_index: correct,
+        explanation: q.explanation.trim() || null,
       }
     })
 
@@ -207,6 +221,15 @@ export default function Editor({ user }) {
         <label>
           תת-כותרת
           <input value={subtitle} onChange={(e) => setSubtitle(e.target.value)} placeholder="לדוגמה: מחלקת הנדסה, 2026" />
+        </label>
+        <label>
+          תיקייה
+          <select value={folderId} onChange={(e) => setFolderId(e.target.value)}>
+            <option value="">ללא תיקייה</option>
+            {folders.map((f) => (
+              <option key={f.id} value={f.id}>{f.name}</option>
+            ))}
+          </select>
         </label>
 
         <div className="logo-field">
@@ -257,24 +280,36 @@ export default function Editor({ user }) {
 
           <div className="options-edit">
             {q.options.map((opt, j) => (
-              <div className={`option-edit color-${j}`} key={j}>
-                <input
-                  type="radio"
-                  name={`correct-${i}`}
-                  checked={q.correct_index === j}
-                  onChange={() => updateQuestion(i, { correct_index: j })}
-                  title="סמן כתשובה נכונה"
-                />
+              <div className={`option-edit color-${j} ${q.correct_index === j ? 'selected' : ''}`} key={j}>
+                <button
+                  type="button"
+                  className={`correct-mark ${q.correct_index === j ? 'on' : ''}`}
+                  title={q.correct_index === j ? 'זו התשובה הנכונה' : 'סמן כתשובה נכונה'}
+                  onClick={() => updateQuestion(i, { correct_index: j })}
+                >
+                  ✓
+                </button>
                 <input
                   className="option-input"
                   value={opt}
                   placeholder={`מסיח ${j + 1}${j < 2 ? '' : ' (רשות)'}`}
                   onChange={(e) => updateOption(i, j, e.target.value)}
                 />
+                {q.correct_index === j && <span className="correct-label">נכונה</span>}
               </div>
             ))}
           </div>
-          <p className="muted small">סמנו בעיגול את התשובה הנכונה.</p>
+          <p className="muted small">לחצו על ה-✓ כדי לסמן את התשובה הנכונה.</p>
+
+          <label>
+            הסבר לתשובה (רשות - יוצג בעת חשיפת התשובה)
+            <textarea
+              rows={2}
+              value={q.explanation}
+              onChange={(e) => updateQuestion(i, { explanation: e.target.value })}
+              placeholder="לדוגמה: התשובה נכונה מפני ש..."
+            />
+          </label>
         </div>
       ))}
 

@@ -222,6 +222,9 @@ export default function Host({ user }) {
               )
             })}
           </div>
+          {currentQuestion.explanation && (
+            <div className="explain-box">💡 {currentQuestion.explanation}</div>
+          )}
           {isHost && (
             <div className="row center-row">
               <button className="btn light xl" onClick={() => setStatus('leaderboard')}>

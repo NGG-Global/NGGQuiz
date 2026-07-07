@@ -53,7 +53,7 @@ export default function Play() {
     let cancelled = false
     supabase
       .from('questions')
-      .select('id, text, options, position')
+      .select('id, text, options, position, explanation')
       .eq('quiz_id', session.quiz_id)
       .order('position')
       .then(({ data }) => { if (!cancelled && data) setQuestions(data) })
@@ -232,6 +232,9 @@ export default function Play() {
             </>
           ) : (
             <h1 className="stage-title wrong-text">לא נכון הפעם 💪</h1>
+          )}
+          {currentQuestion?.explanation && (
+            <div className="explain-box">💡 {currentQuestion.explanation}</div>
           )}
           {rankInfo && <p className="stage-subtitle">מקום {rankInfo.rank} מתוך {rankInfo.total}</p>}
         </div>

@@ -121,17 +121,40 @@ code { background: #eceef4; padding: 0 4px; border-radius: 4px; direction: ltr; 
 .quiz-card:hover { transform: translateY(-3px); box-shadow: 0 10px 30px rgba(30, 20, 70, 0.16); }
 .quiz-card .row { margin-top: auto; padding-top: 12px; }
 .quiz-logo-thumb { max-height: 40px; max-width: 140px; object-fit: contain; margin-bottom: 8px; align-self: flex-start; }
+.card-manage { margin-top: 10px; padding-top: 10px; border-top: 1px solid #eceef4; }
+.card-manage select { flex: 1; width: auto; padding: 7px 10px; font-size: 0.9rem; }
+.folder-badge {
+  background: #eee7fa; color: var(--primary); border-radius: 999px;
+  padding: 2px 10px; margin-inline-start: 8px; font-weight: 600;
+}
+
+/* folder bar */
+.folder-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.chip-btn {
+  font: inherit; font-weight: 600; cursor: pointer;
+  background: #fff; border: 1.5px solid #d5d8e2; border-radius: 999px;
+  padding: 7px 16px; display: inline-flex; align-items: center; gap: 6px;
+  transition: border-color 0.15s, background 0.15s;
+}
+.chip-btn:hover { border-color: var(--primary); }
+.chip-btn.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+.chip-btn.new { border-style: dashed; color: var(--muted); }
+.chip-x { opacity: 0.6; font-size: 0.8em; padding: 0 2px; }
+.chip-x:hover { opacity: 1; }
+.new-folder-form { margin-bottom: 14px; }
+.new-folder-form input { max-width: 280px; }
 
 /* ---------- forms ---------- */
 
 label { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; font-weight: 600; }
 .field-title { font-weight: 600; display: block; margin-bottom: 8px; }
-input, select {
+input, select, textarea {
   font: inherit; padding: 10px 12px; border: 1.5px solid #d5d8e2;
   border-radius: 10px; background: #fff; width: 100%;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
-input:focus, select:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(70, 23, 143, 0.15); }
+textarea { resize: vertical; }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(70, 23, 143, 0.15); }
 
 .logo-field { margin-top: 4px; }
 .logo-preview { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
@@ -182,13 +205,40 @@ input:focus, select:focus { outline: none; border-color: var(--primary); box-sha
 
 .question-card .question-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .options-edit { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.option-edit { display: flex; align-items: center; gap: 8px; padding: 8px; border-radius: 10px; }
-.option-edit input[type='radio'] { width: 20px; height: 20px; flex: none; accent-color: #fff; cursor: pointer; }
+.option-edit {
+  display: flex; align-items: center; gap: 8px; padding: 8px; border-radius: 10px;
+  border: 3px solid transparent;
+  transition: box-shadow 0.15s, border-color 0.15s;
+}
 .option-edit.color-0 { background: var(--c-red); }
 .option-edit.color-1 { background: var(--c-blue); }
 .option-edit.color-2 { background: var(--c-gold); }
 .option-edit.color-3 { background: var(--c-green); }
+.option-edit.selected {
+  border-color: #fff;
+  box-shadow: 0 0 0 3px var(--c-green), 0 4px 14px rgba(38, 137, 12, 0.35);
+}
 .option-input { border: none; }
+
+.correct-mark {
+  flex: none; width: 30px; height: 30px; border-radius: 50%;
+  border: 2.5px solid rgba(255, 255, 255, 0.75);
+  background: rgba(0, 0, 0, 0.12); color: transparent;
+  font-size: 1rem; font-weight: 900; line-height: 1; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: background 0.15s, color 0.15s, transform 0.1s;
+}
+.correct-mark:hover { background: rgba(255, 255, 255, 0.25); color: rgba(255, 255, 255, 0.8); }
+.correct-mark.on {
+  background: #fff; border-color: #fff; color: var(--c-green);
+  animation: popIn 0.25s ease both;
+}
+.correct-label {
+  flex: none; background: #fff; color: var(--c-green);
+  border-radius: 999px; padding: 3px 12px;
+  font-size: 0.8rem; font-weight: 800;
+  animation: popIn 0.25s ease both;
+}
 
 /* ---------- run setup ---------- */
 
@@ -310,6 +360,14 @@ input:focus, select:focus { outline: none; border-color: var(--primary); box-sha
 @media (max-width: 560px) {
   .options-grid { grid-template-columns: 1fr; }
   .options-edit { grid-template-columns: 1fr; }
+}
+
+.explain-box {
+  background: rgba(255, 255, 255, 0.14); border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 12px; padding: 12px 20px; max-width: 760px;
+  font-size: clamp(1rem, 2.2vw, 1.3rem); font-weight: 500; line-height: 1.5;
+  backdrop-filter: blur(4px);
+  animation: fadeUp 0.5s ease 0.4s both;
 }
 
 /* ---------- leaderboard + podium ---------- */

@@ -9,9 +9,17 @@ create extension if not exists pgcrypto;
 -- Tables
 -- ------------------------------------------------------------
 
+create table if not exists public.folders (
+  id uuid primary key default gen_random_uuid(),
+  owner_id uuid not null default auth.uid() references auth.users(id),
+  name text not null,
+  created_at timestamptz not null default now()
+);
+
 create table if not exists public.quizzes (
   id uuid primary key default gen_random_uuid(),
   owner_id uuid not null default auth.uid() references auth.users(id),
+  folder_id uuid references public.folders(id) on delete set null,
   title text not null,
   subtitle text,
   logo_url text,                   -- client logo shown on the opening screen
@@ -25,7 +33,8 @@ create table if not exists public.questions (
   position int not null,
   text text not null,
   options jsonb not null,          -- array of 2-4 answer strings
-  correct_index int not null
+  correct_index int not null,
+  explanation text                 -- optional, shown when the answer is revealed
 );
 
 create table if not exists public.game_sessions (
@@ -169,11 +178,22 @@ grant execute on function public.start_question(uuid, int) to authenticated;
 -- Players (anon) may read game data, join a session and answer.
 -- ------------------------------------------------------------
 
+alter table public.folders enable row level security;
 alter table public.quizzes enable row level security;
 alter table public.questions enable row level security;
 alter table public.game_sessions enable row level security;
 alter table public.players enable row level security;
 alter table public.answers enable row level security;
+
+-- folders: shared library structure, only the creator manages
+create policy "folders_select" on public.folders
+  for select using (true);
+create policy "folders_insert" on public.folders
+  for insert to authenticated with check (owner_id = auth.uid());
+create policy "folders_update" on public.folders
+  for update to authenticated using (owner_id = auth.uid());
+create policy "folders_delete" on public.folders
+  for delete to authenticated using (owner_id = auth.uid());
 
 -- quizzes: shared library (all can read), only the owner edits
 create policy "quizzes_select" on public.quizzes
