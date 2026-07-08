@@ -113,6 +113,11 @@ export default function Library({ user }) {
   async function duplicateQuiz(quiz) {
     setError('')
     setDuplicatingId(quiz.id)
+    const { data: src } = await supabase
+      .from('quizzes')
+      .select('teams_enabled, team_mode, teams')
+      .eq('id', quiz.id)
+      .single()
     const { data: newQuiz, error } = await supabase
       .from('quizzes')
       .insert({
@@ -120,6 +125,9 @@ export default function Library({ user }) {
         subtitle: quiz.subtitle,
         logo_url: quiz.logo_url,
         folder_id: quiz.folder_id,
+        teams_enabled: src?.teams_enabled ?? false,
+        team_mode: src?.team_mode ?? 'manual',
+        teams: src?.teams ?? null,
       })
       .select('id, owner_id, folder_id, title, subtitle, logo_url, updated_at')
       .single()
@@ -130,7 +138,7 @@ export default function Library({ user }) {
     }
     const { data: qs, error: qErr } = await supabase
       .from('questions')
-      .select('position, text, options, correct_index, explanation')
+      .select('position, qtype, text, options, correct_index, meta, explanation')
       .eq('quiz_id', quiz.id)
     let copied = 0
     if (!qErr && qs?.length) {

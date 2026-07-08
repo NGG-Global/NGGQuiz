@@ -5,7 +5,9 @@ import { supabase } from '../supabaseClient'
 import { playLink } from '../lib/links'
 import Elapsed from '../components/Elapsed.jsx'
 import Confetti from '../components/Confetti.jsx'
+import WordCloud from '../components/WordCloud.jsx'
 import { OPTION_SHAPES } from '../lib/optionStyle'
+import { TEAM_COLORS, kendallSimilarity } from '../lib/questionTypes'
 
 export default function Host({ user }) {
   const { sessionId } = useParams()
@@ -25,6 +27,7 @@ export default function Host({ user }) {
     [session, questions]
   )
   const isHost = session && user && session.host_id === user.id
+  const teamsOn = quiz?.teams_enabled && quiz?.teams?.length
 
   // initial load
   useEffect(() => {
@@ -42,7 +45,7 @@ export default function Host({ user }) {
       }
       setSession(s)
       const [{ data: q }, { data: qs }, { data: ps }] = await Promise.all([
-        supabase.from('quizzes').select('title, subtitle, logo_url').eq('id', s.quiz_id).single(),
+        supabase.from('quizzes').select('*').eq('id', s.quiz_id).single(),
         supabase.from('questions').select('*').eq('quiz_id', s.quiz_id).order('position'),
         supabase.from('players').select('*').eq('session_id', sessionId).order('joined_at'),
       ])
@@ -94,7 +97,7 @@ export default function Host({ user }) {
           .order('score', { ascending: false })
         if (!cancelled && data) setPlayers(data)
       }
-      if (session.status === 'question' && currentQuestion) {
+      if (['question', 'reveal'].includes(session.status) && currentQuestion) {
         const { data } = await supabase
           .from('answers')
           .select('*')
@@ -116,6 +119,24 @@ export default function Host({ user }) {
     () => (currentQuestion ? answers.filter((a) => a.question_id === currentQuestion.id) : []),
     [answers, currentQuestion]
   )
+
+  const teamTotals = useMemo(() => {
+    if (!teamsOn) return []
+    const totals = quiz.teams.map((name, i) => ({
+      name,
+      color: TEAM_COLORS[i % TEAM_COLORS.length],
+      score: 0,
+      members: 0,
+    }))
+    players.forEach((p) => {
+      const t = totals.find((x) => x.name === p.team)
+      if (t) {
+        t.score += p.score
+        t.members += 1
+      }
+    })
+    return [...totals].sort((a, b) => b.score - a.score)
+  }, [teamsOn, quiz?.teams, players])
 
   async function reveal() {
     if (!isHost || !currentQuestion || revealDone.current === currentQuestion.id) return
@@ -142,6 +163,60 @@ export default function Host({ user }) {
 
   const isLast = session.current_index >= questions.length - 1
   const sorted = [...players].sort((a, b) => b.score - a.score)
+  const cloudTexts = currentAnswers.map((a) => a.answer?.text).filter(Boolean)
+
+  const neutralOrder = currentQuestion?.qtype === 'ranking'
+    ? [...(currentQuestion.options || [])].sort((a, b) => String(a).localeCompare(String(b), 'he'))
+    : []
+
+  const rankingAvgAccuracy = (() => {
+    if (currentQuestion?.qtype !== 'ranking') return null
+    const sims = currentAnswers
+      .map((a) => a.answer?.order)
+      .filter(Array.isArray)
+      .map(kendallSimilarity)
+    if (!sims.length) return null
+    return Math.round((sims.reduce((s, x) => s + x, 0) / sims.length) * 100)
+  })()
+
+  function nextButtons() {
+    if (!isHost) return null
+    return (
+      <div className="row center-row">
+        <button className="btn light xl" onClick={() => setStatus('leaderboard')}>
+          טבלת המובילים
+        </button>
+        {isLast ? (
+          <button className="btn primary xl" onClick={() => setStatus('finished')}>
+            לתוצאות הסופיות
+          </button>
+        ) : (
+          <button className="btn primary xl" onClick={() => startQuestion(session.current_index + 1)}>
+            השאלה הבאה
+          </button>
+        )}
+      </div>
+    )
+  }
+
+  function teamScoreBoard() {
+    if (!teamsOn) return null
+    const max = Math.max(1, ...teamTotals.map((t) => t.score))
+    return (
+      <div className="team-scores">
+        {teamTotals.map((t, i) => (
+          <div className="team-row" style={{ '--i': i }} key={t.name}>
+            <span className="dot big" style={{ background: t.color }} />
+            <span className="name">{t.name}</span>
+            <div className="team-bar">
+              <div style={{ width: `${(t.score / max) * 100}%`, background: t.color }} />
+            </div>
+            <span className="score">{t.score}</span>
+          </div>
+        ))}
+      </div>
+    )
+  }
 
   return (
     <div className="stage">
@@ -158,12 +233,33 @@ export default function Host({ user }) {
           <p className="join-url" dir="ltr">{playLink(session.pin)}</p>
           {qr && <img className="qr-big" src={qr} alt="קוד QR להצטרפות" />}
           <h3>משתתפים ({players.length})</h3>
-          <div className="player-chips">
-            {players.map((p, i) => (
-              <span className="chip pop" style={{ '--i': i % 12 }} key={p.id}>{p.nickname}</span>
-            ))}
-            {players.length === 0 && <span className="waiting-dots">ממתינים למצטרפים</span>}
-          </div>
+          {teamsOn ? (
+            <div className="team-lobby">
+              {quiz.teams.map((t, ti) => {
+                const members = players.filter((p) => p.team === t)
+                const color = TEAM_COLORS[ti % TEAM_COLORS.length]
+                return (
+                  <div className="team-group" key={t} style={{ borderColor: `${color}88` }}>
+                    <div className="team-group-head" style={{ color }}>
+                      <span className="dot big" style={{ background: color }} /> {t} ({members.length})
+                    </div>
+                    <div className="player-chips">
+                      {members.map((p, i) => (
+                        <span className="chip pop" style={{ '--i': i % 12 }} key={p.id}>{p.nickname}</span>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          ) : (
+            <div className="player-chips">
+              {players.map((p, i) => (
+                <span className="chip pop" style={{ '--i': i % 12 }} key={p.id}>{p.nickname}</span>
+              ))}
+              {players.length === 0 && <span className="waiting-dots">ממתינים למצטרפים</span>}
+            </div>
+          )}
           {isHost && (
             <button
               className="btn primary xl"
@@ -184,14 +280,47 @@ export default function Host({ user }) {
             <span className="meta-pill">ענו: {currentAnswers.length}/{players.length}</span>
           </div>
           <h1 className="stage-title">{currentQuestion.text}</h1>
-          <div className="options-grid">
-            {currentQuestion.options.map((opt, i) => (
-              <div className={`option-tile color-${i}`} style={{ '--i': i }} key={i}>
-                <span className="shape">{OPTION_SHAPES[i]}</span>
-                <span>{opt}</span>
+
+          {(currentQuestion.qtype === 'multiple_choice' || currentQuestion.qtype === 'poll') && (
+            <div className="options-grid">
+              {currentQuestion.options.map((opt, i) => (
+                <div className={`option-tile color-${i}`} style={{ '--i': i }} key={i}>
+                  <span className="shape">{OPTION_SHAPES[i]}</span>
+                  <span>{opt}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {currentQuestion.qtype === 'word_cloud' && (
+            <>
+              <p className="stage-subtitle">☁️ ענו מהטלפון - הענן נבנה בזמן אמת</p>
+              <WordCloud texts={cloudTexts} />
+            </>
+          )}
+
+          {currentQuestion.qtype === 'ranking' && (
+            <>
+              <p className="stage-subtitle">🔢 סדרו את הפריטים בסדר הנכון במכשיר שלכם</p>
+              <div className="rank-board">
+                {neutralOrder.map((item, i) => (
+                  <div className="rank-item neutral" style={{ '--i': i }} key={item}>
+                    <span className="rank-text">{item}</span>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+            </>
+          )}
+
+          {currentQuestion.qtype === 'hotspot' && (
+            <>
+              <p className="stage-subtitle">🎯 הקישו על המיקום הנכון במכשיר שלכם</p>
+              <div className="hotspot-frame stage-image">
+                <img src={currentQuestion.meta?.image_url} alt="תמונת השאלה" draggable={false} />
+              </div>
+            </>
+          )}
+
           {isHost && (
             <button className="btn light xl" onClick={reveal}>
               חשיפת התשובה
@@ -203,55 +332,88 @@ export default function Host({ user }) {
       {session.status === 'reveal' && currentQuestion && (
         <div className="stage-inner" key={`r-${session.current_index}`}>
           <h1 className="stage-title">{currentQuestion.text}</h1>
-          <div className="options-grid">
-            {currentQuestion.options.map((opt, i) => {
-              const count = currentAnswers.filter((a) => a.answer_index === i).length
-              const max = Math.max(1, ...currentQuestion.options.map(
-                (_, j) => currentAnswers.filter((a) => a.answer_index === j).length
-              ))
-              const correct = i === currentQuestion.correct_index
-              return (
-                <div className={`option-tile color-${i} ${correct ? 'correct' : 'dimmed'}`} style={{ '--i': i }} key={i}>
-                  <span className="shape">{OPTION_SHAPES[i]}</span>
-                  <span>{opt} {correct && '✓'}</span>
-                  <div className="bar-track">
-                    <div className="bar" style={{ width: `${(count / max) * 100}%` }} />
+
+          {(currentQuestion.qtype === 'multiple_choice' || currentQuestion.qtype === 'poll') && (
+            <div className="options-grid">
+              {currentQuestion.options.map((opt, i) => {
+                const count = currentAnswers.filter((a) => a.answer_index === i).length
+                const max = Math.max(1, ...currentQuestion.options.map(
+                  (_, j) => currentAnswers.filter((a) => a.answer_index === j).length
+                ))
+                const isPoll = currentQuestion.qtype === 'poll'
+                const correct = !isPoll && i === currentQuestion.correct_index
+                return (
+                  <div
+                    className={`option-tile color-${i} ${isPoll ? '' : correct ? 'correct' : 'dimmed'}`}
+                    style={{ '--i': i }}
+                    key={i}
+                  >
+                    <span className="shape">{OPTION_SHAPES[i]}</span>
+                    <span>{opt} {correct && '✓'}</span>
+                    <div className="bar-track">
+                      <div className="bar" style={{ width: `${(count / max) * 100}%` }} />
+                    </div>
+                    <span className="count">{count}</span>
                   </div>
-                  <span className="count">{count}</span>
-                </div>
-              )
-            })}
-          </div>
+                )
+              })}
+            </div>
+          )}
+
+          {currentQuestion.qtype === 'word_cloud' && <WordCloud texts={cloudTexts} />}
+
+          {currentQuestion.qtype === 'ranking' && (
+            <>
+              <p className="stage-subtitle">הסדר הנכון:</p>
+              <div className="rank-board">
+                {(currentQuestion.options || []).map((item, i) => (
+                  <div className="rank-item revealed" style={{ '--i': i }} key={item}>
+                    <span className="rank-num">{i + 1}</span>
+                    <span className="rank-text">{item}</span>
+                  </div>
+                ))}
+              </div>
+              {rankingAvgAccuracy != null && (
+                <p className="stage-subtitle">🎯 דיוק ממוצע: {rankingAvgAccuracy}%</p>
+              )}
+            </>
+          )}
+
+          {currentQuestion.qtype === 'hotspot' && (
+            <div className="hotspot-frame stage-image">
+              <img src={currentQuestion.meta?.image_url} alt="תמונת השאלה" draggable={false} />
+              {currentAnswers.map((a) =>
+                a.answer?.x != null ? (
+                  <span
+                    key={a.id}
+                    className="hotspot-marker guess"
+                    style={{ left: `${a.answer.x}%`, top: `${a.answer.y}%` }}
+                  />
+                ) : null
+              )}
+              <span
+                className="hotspot-marker target pulse"
+                style={{ left: `${currentQuestion.meta?.x}%`, top: `${currentQuestion.meta?.y}%` }}
+              />
+            </div>
+          )}
+
           {currentQuestion.explanation && (
             <div className="explain-box">💡 {currentQuestion.explanation}</div>
           )}
-          {isHost && (
-            <div className="row center-row">
-              <button className="btn light xl" onClick={() => setStatus('leaderboard')}>
-                טבלת המובילים
-              </button>
-              {isLast ? (
-                <button className="btn primary xl" onClick={() => setStatus('finished')}>
-                  לתוצאות הסופיות
-                </button>
-              ) : (
-                <button className="btn primary xl" onClick={() => startQuestion(session.current_index + 1)}>
-                  השאלה הבאה
-                </button>
-              )}
-            </div>
-          )}
+          {nextButtons()}
         </div>
       )}
 
       {session.status === 'leaderboard' && (
         <div className="stage-inner" key={`l-${session.current_index}`}>
-          <h1 className="stage-title">טבלת המובילים</h1>
+          <h1 className="stage-title">{teamsOn ? 'מצב הקבוצות' : 'טבלת המובילים'}</h1>
+          {teamScoreBoard()}
           <ol className="leaderboard">
-            {sorted.slice(0, 10).map((p, i) => (
+            {sorted.slice(0, teamsOn ? 5 : 10).map((p, i) => (
               <li key={p.id} style={{ '--i': i }} className={i < 3 ? `top-${i + 1}` : ''}>
                 <span className="rank">{i + 1}</span>
-                <span className="name">{p.nickname}</span>
+                <span className="name">{p.nickname}{p.team ? ` · ${p.team}` : ''}</span>
                 <span className="score">{p.score}</span>
               </li>
             ))}
@@ -276,31 +438,68 @@ export default function Host({ user }) {
           {quiz.logo_url && <img className="client-logo small" src={quiz.logo_url} alt="לוגו הלקוח" />}
           <h1 className="stage-title">🏆 {quiz.title}</h1>
           <h2 className="stage-subtitle">התוצאות הסופיות</h2>
-          <div className="podium">
-            {[1, 0, 2].map((rank) =>
-              sorted[rank] ? (
-                <div className={`podium-slot place-${rank + 1}`} key={sorted[rank].id}>
-                  <div className="podium-medal">{['🥇', '🥈', '🥉'][rank]}</div>
-                  <div className="podium-name">{sorted[rank].nickname}</div>
-                  <div className="podium-block">
-                    <div className="podium-rank">{rank + 1}</div>
-                    <div className="podium-score">{sorted[rank].score}</div>
-                  </div>
-                </div>
-              ) : null
-            )}
-          </div>
-          {sorted.length > 3 && (
-            <ol className="leaderboard compact">
-              {sorted.slice(3, 10).map((p, i) => (
-                <li key={p.id} style={{ '--i': i }}>
-                  <span className="rank">{i + 4}</span>
-                  <span className="name">{p.nickname}</span>
-                  <span className="score">{p.score}</span>
-                </li>
-              ))}
-            </ol>
+
+          {teamsOn ? (
+            <>
+              <div className="podium">
+                {[1, 0, 2].map((rank) =>
+                  teamTotals[rank] ? (
+                    <div className={`podium-slot place-${rank + 1}`} key={teamTotals[rank].name}>
+                      <div className="podium-medal">{['🥇', '🥈', '🥉'][rank]}</div>
+                      <div className="podium-name">
+                        <span className="dot big" style={{ background: teamTotals[rank].color }} />{' '}
+                        {teamTotals[rank].name}
+                      </div>
+                      <div className="podium-block">
+                        <div className="podium-rank">{rank + 1}</div>
+                        <div className="podium-score">{teamTotals[rank].score}</div>
+                      </div>
+                    </div>
+                  ) : null
+                )}
+              </div>
+              {teamTotals.length > 3 && teamScoreBoard()}
+              <p className="stage-subtitle">המצטיינים האישיים:</p>
+              <ol className="leaderboard compact">
+                {sorted.slice(0, 5).map((p, i) => (
+                  <li key={p.id} style={{ '--i': i }}>
+                    <span className="rank">{i + 1}</span>
+                    <span className="name">{p.nickname}{p.team ? ` · ${p.team}` : ''}</span>
+                    <span className="score">{p.score}</span>
+                  </li>
+                ))}
+              </ol>
+            </>
+          ) : (
+            <>
+              <div className="podium">
+                {[1, 0, 2].map((rank) =>
+                  sorted[rank] ? (
+                    <div className={`podium-slot place-${rank + 1}`} key={sorted[rank].id}>
+                      <div className="podium-medal">{['🥇', '🥈', '🥉'][rank]}</div>
+                      <div className="podium-name">{sorted[rank].nickname}</div>
+                      <div className="podium-block">
+                        <div className="podium-rank">{rank + 1}</div>
+                        <div className="podium-score">{sorted[rank].score}</div>
+                      </div>
+                    </div>
+                  ) : null
+                )}
+              </div>
+              {sorted.length > 3 && (
+                <ol className="leaderboard compact">
+                  {sorted.slice(3, 10).map((p, i) => (
+                    <li key={p.id} style={{ '--i': i }}>
+                      <span className="rank">{i + 4}</span>
+                      <span className="name">{p.nickname}</span>
+                      <span className="score">{p.score}</span>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </>
           )}
+
           {isHost && (
             <button className="btn ghost light-ghost" onClick={() => navigate('/')}>חזרה לספרייה</button>
           )}

@@ -29,6 +29,10 @@ create table if not exists public.quizzes (
   title text not null,
   subtitle text,
   logo_url text,                   -- client logo shown on the opening screen
+  teams_enabled boolean not null default false,
+  team_mode text not null default 'manual'
+    check (team_mode in ('manual', 'random')),
+  teams jsonb,                     -- array of team names
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -37,9 +41,12 @@ create table if not exists public.questions (
   id uuid primary key default gen_random_uuid(),
   quiz_id uuid not null references public.quizzes(id) on delete cascade,
   position int not null,
+  qtype text not null default 'multiple_choice'
+    check (qtype in ('multiple_choice', 'poll', 'word_cloud', 'ranking', 'hotspot')),
   text text not null,
-  options jsonb not null,          -- array of 2-4 answer strings
-  correct_index int not null,
+  options jsonb,                   -- mc/poll: answer strings; ranking: items in the CORRECT order
+  correct_index int,               -- multiple_choice only
+  meta jsonb,                      -- hotspot: {image_url, x, y} in percent coordinates
   explanation text                 -- optional, shown when the answer is revealed
 );
 
@@ -59,6 +66,7 @@ create table if not exists public.players (
   id uuid primary key default gen_random_uuid(),
   session_id uuid not null references public.game_sessions(id) on delete cascade,
   nickname text not null,
+  team text,                       -- team name when the quiz runs in team mode
   score int not null default 0,
   joined_at timestamptz not null default now(),
   unique (session_id, nickname)
@@ -69,7 +77,8 @@ create table if not exists public.answers (
   session_id uuid not null references public.game_sessions(id) on delete cascade,
   question_id uuid not null references public.questions(id) on delete cascade,
   player_id uuid not null references public.players(id) on delete cascade,
-  answer_index int not null,
+  answer_index int,                -- multiple_choice / poll
+  answer jsonb,                    -- word_cloud: {text}; ranking: {order}; hotspot: {x, y}
   is_correct boolean not null default false,
   points int not null default 0,
   answered_at timestamptz not null default now(),
@@ -81,14 +90,28 @@ create table if not exists public.answers (
 alter table public.folders add column if not exists color text;
 alter table public.quizzes add column if not exists logo_url text;
 alter table public.quizzes add column if not exists folder_id uuid references public.folders(id) on delete set null;
+alter table public.quizzes add column if not exists teams_enabled boolean not null default false;
+alter table public.quizzes add column if not exists team_mode text not null default 'manual';
+alter table public.quizzes add column if not exists teams jsonb;
 alter table public.questions add column if not exists explanation text;
+alter table public.questions add column if not exists qtype text not null default 'multiple_choice';
+alter table public.questions add column if not exists meta jsonb;
+alter table public.questions alter column correct_index drop not null;
+alter table public.questions alter column options drop not null;
 alter table public.questions drop column if exists time_limit;
+alter table public.players add column if not exists team text;
+alter table public.answers add column if not exists answer jsonb;
+alter table public.answers alter column answer_index drop not null;
 
 -- ------------------------------------------------------------
 -- Scoring: computed on the server so clients cannot tamper.
--- There is no time limit; speed still matters. A correct answer
--- earns 500-1000 points with an exponential decay by response
--- time (instant -> 1000, ~30s -> ~684, several minutes -> ~500).
+-- There is no time limit; speed still matters. The speed base is
+-- 500-1000 points with an exponential decay by response time
+-- (instant -> 1000, ~30s -> ~684, several minutes -> ~500).
+--   multiple_choice: full base when correct, 0 otherwise
+--   ranking:         base scaled by Kendall-tau similarity
+--   hotspot:         base scaled by distance from the target
+--   poll/word_cloud: participation only, no points
 -- ------------------------------------------------------------
 
 create or replace function public.score_answer()
@@ -101,20 +124,64 @@ declare
   q record;
   s record;
   elapsed numeric;
+  base numeric;
+  arr jsonb;
+  n int;
+  d int;
+  i int;
+  j int;
+  sim numeric;
+  dist numeric;
 begin
-  select correct_index into q from public.questions where id = new.question_id;
-  select status, question_started_at, current_index into s from public.game_sessions where id = new.session_id;
+  select qtype, correct_index, options, meta into q from public.questions where id = new.question_id;
+  select status, question_started_at into s from public.game_sessions where id = new.session_id;
 
   if s.status is distinct from 'question' then
     raise exception 'session is not accepting answers';
   end if;
 
-  new.is_correct := (new.answer_index = q.correct_index);
+  elapsed := greatest(0, extract(epoch from (now() - s.question_started_at)));
+  base := 500 + 500 * exp(-elapsed / 30.0);
 
-  if new.is_correct then
-    elapsed := greatest(0, extract(epoch from (now() - s.question_started_at)));
-    new.points := round(500 + 500 * exp(-elapsed / 30.0));
+  if q.qtype = 'multiple_choice' then
+    new.is_correct := (new.answer_index = q.correct_index);
+    new.points := case when new.is_correct then round(base) else 0 end;
+
+  elsif q.qtype = 'ranking' then
+    -- answer.order holds the original item indices in the player's
+    -- chosen order; the correct order is 0..n-1, so the Kendall
+    -- distance equals the number of inversions in the permutation
+    arr := new.answer -> 'order';
+    n := coalesce(jsonb_array_length(q.options), 0);
+    if arr is null or jsonb_array_length(arr) <> n or n < 2 then
+      raise exception 'invalid ranking answer';
+    end if;
+    d := 0;
+    for i in 0 .. n - 2 loop
+      for j in i + 1 .. n - 1 loop
+        if (arr ->> i)::int > (arr ->> j)::int then
+          d := d + 1;
+        end if;
+      end loop;
+    end loop;
+    sim := 1 - d / (n * (n - 1) / 2.0);
+    new.is_correct := (d = 0);
+    new.points := round(base * sim);
+
+  elsif q.qtype = 'hotspot' then
+    -- percent-coordinate distance: full credit within 5, nothing
+    -- beyond 40, linear in between
+    dist := sqrt(
+      power((q.meta ->> 'x')::numeric - (new.answer ->> 'x')::numeric, 2) +
+      power((q.meta ->> 'y')::numeric - (new.answer ->> 'y')::numeric, 2)
+    );
+    sim := greatest(0, least(1, (40 - dist) / 35.0));
+    new.is_correct := sim >= 0.5;
+    new.points := round(base * sim);
+
   else
+    -- poll / word_cloud: no right answer, no points
+    new.is_correct := false;
     new.points := 0;
   end if;
 
@@ -319,13 +386,18 @@ insert into storage.buckets (id, name, public)
 values ('logos', 'logos', true)
 on conflict (id) do nothing;
 
+-- question images (hotspot questions)
+insert into storage.buckets (id, name, public)
+values ('media', 'media', true)
+on conflict (id) do nothing;
+
 drop policy if exists "logos_read" on storage.objects;
 create policy "logos_read" on storage.objects
-  for select using (bucket_id = 'logos');
+  for select using (bucket_id in ('logos', 'media'));
 
 drop policy if exists "logos_write" on storage.objects;
 create policy "logos_write" on storage.objects
-  for insert to authenticated with check (bucket_id = 'logos');
+  for insert to authenticated with check (bucket_id in ('logos', 'media'));
 
 -- ------------------------------------------------------------
 -- Realtime: broadcast changes for the live game screens
