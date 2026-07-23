@@ -8,6 +8,17 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;600;700;800;900&display=swap" rel="stylesheet" />
     <title>NGG Quiz - חידונים אינטראקטיביים</title>
+    <script>
+      // Apply the saved interface language before first paint to avoid a
+      // direction flash. The i18n module keeps it in sync afterwards.
+      try {
+        var nggLang = localStorage.getItem('ngg-lang');
+        if (nggLang === 'en') {
+          document.documentElement.lang = 'en';
+          document.documentElement.dir = 'ltr';
+        }
+      } catch (e) { /* storage unavailable */ }
+    </script>
   </head>
   <body>
     <div id="root"></div>

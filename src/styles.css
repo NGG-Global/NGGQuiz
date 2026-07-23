@@ -33,6 +33,34 @@ h1, h2, h3 { margin: 0.2em 0; }
 .small { font-size: 0.85rem; }
 code { background: #eceef4; padding: 0 4px; border-radius: 4px; direction: ltr; }
 
+/* ---------- interface language toggle ---------- */
+
+.lang-toggle {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid #d8dbe6;
+  border-radius: 999px;
+  background: var(--card);
+}
+.lang-toggle button {
+  border: none;
+  background: transparent;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--muted);
+  padding: 3px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  line-height: 1.4;
+}
+.lang-toggle button.active { background: var(--primary); color: #fff; }
+/* On the dark host/player gradient screens the pill sits on purple. */
+.stage .lang-toggle { border-color: rgba(255, 255, 255, 0.35); background: rgba(255, 255, 255, 0.08); }
+.stage .lang-toggle button { color: rgba(255, 255, 255, 0.75); }
+.stage .lang-toggle button.active { background: rgba(255, 255, 255, 0.92); color: #1d1f2b; }
+
 /* ---------- entrance animations ---------- */
 
 @keyframes fadeUp {
@@ -383,6 +411,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--p
   background: rgba(255, 255, 255, 0.9);
   transform-origin: right; animation: barGrow 0.9s cubic-bezier(0.2, 0.7, 0.2, 1) 0.25s both;
 }
+[dir='ltr'] .option-tile .bar { transform-origin: left; }
 .option-tile .count { font-size: 1.2em; min-width: 2ch; font-variant-numeric: tabular-nums; }
 
 @media (max-width: 560px) {
@@ -504,6 +533,8 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--p
 .team-row .team-bar div {
   height: 100%; border-radius: 8px; min-width: 3px;
   transform-origin: right; animation: barGrow 0.9s cubic-bezier(0.2, 0.7, 0.2, 1) 0.3s both;
+}
+[dir='ltr'] .team-row .team-bar div { transform-origin: left;
 }
 .team-row .score { font-variant-numeric: tabular-nums; min-width: 3ch; }
 
