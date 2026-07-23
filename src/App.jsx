@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { supabase, isConfigured } from './supabaseClient'
+import { useI18n } from './lib/i18n.js'
 import Login from './pages/Login.jsx'
 import Library from './pages/Library.jsx'
 import Editor from './pages/Editor.jsx'
@@ -9,16 +10,17 @@ import Host from './pages/Host.jsx'
 import Play from './pages/Play.jsx'
 
 function SetupNotice() {
+  const { t } = useI18n()
   return (
     <div className="center-screen">
       <div className="card" style={{ maxWidth: 560 }}>
         <h1>NGG Quiz</h1>
         <p>
-          המערכת עדיין לא חוברה ל-Supabase. יש להגדיר את משתני הסביבה
-          <code> VITE_SUPABASE_URL </code>ו-<code> VITE_SUPABASE_ANON_KEY </code>
-          (מקומית בקובץ <code>.env</code>, ובדפלוי כ-GitHub Secrets) ולבנות מחדש.
+          {t('המערכת עדיין לא חוברה ל-Supabase. יש להגדיר את משתני הסביבה')}
+          <code> VITE_SUPABASE_URL </code>{t('ו-')}<code> VITE_SUPABASE_ANON_KEY </code>
+          {t('(מקומית בקובץ')} <code>.env</code>{t(', ובדפלוי כ-GitHub Secrets) ולבנות מחדש.')}
         </p>
-        <p>הוראות מלאות בקובץ README.md.</p>
+        <p>{t('הוראות מלאות בקובץ README.md.')}</p>
       </div>
     </div>
   )
