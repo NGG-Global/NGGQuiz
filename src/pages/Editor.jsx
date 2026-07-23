@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { supabase } from '../supabaseClient'
 import { QUESTION_TYPES, TEAM_COLORS } from '../lib/questionTypes'
+import { useI18n } from '../lib/i18n.js'
 
 function blankQuestion(qtype = 'multiple_choice') {
   return {
@@ -17,6 +18,7 @@ function blankQuestion(qtype = 'multiple_choice') {
 const TYPE_LABEL = Object.fromEntries(QUESTION_TYPES.map((t) => [t.value, t.label]))
 
 export default function Editor() {
+  const { t } = useI18n()
   const { quizId } = useParams()
   const isNew = quizId === 'new'
   const navigate = useNavigate()
@@ -57,7 +59,7 @@ export default function Editor() {
       ])
       if (cancelled) return
       if (qErr || qsErr) {
-        setError('טעינת החידון נכשלה.')
+        setError(t('טעינת החידון נכשלה.'))
         setLoading(false)
         return
       }
@@ -123,14 +125,14 @@ export default function Editor() {
   async function uploadToBucket(bucket, file) {
     if (!file) return null
     if (file.size > 3 * 1024 * 1024) {
-      setError('הקובץ גדול מדי (מקסימום 3MB).')
+      setError(t('הקובץ גדול מדי (מקסימום 3MB).'))
       return null
     }
     const ext = (file.name.split('.').pop() || 'png').toLowerCase()
     const path = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`
     const { error: upErr } = await supabase.storage.from(bucket).upload(path, file)
     if (upErr) {
-      setError('העלאת הקובץ נכשלה. ודאו שהסכמה העדכנית הורצה ב-Supabase.')
+      setError(t('העלאת הקובץ נכשלה. ודאו שהסכמה העדכנית הורצה ב-Supabase.'))
       return null
     }
     return supabase.storage.from(bucket).getPublicUrl(path).data.publicUrl
@@ -164,28 +166,28 @@ export default function Editor() {
   }
 
   function validate() {
-    if (!title.trim()) return 'יש להזין כותרת לחידון.'
+    if (!title.trim()) return t('יש להזין כותרת לחידון.')
     if (teamsEnabled) {
       const names = teams.map((t) => t.trim()).filter(Boolean)
-      if (names.length < 2) return 'מצב צוותים דורש לפחות שתי קבוצות עם שם.'
+      if (names.length < 2) return t('מצב צוותים דורש לפחות שתי קבוצות עם שם.')
       if (new Set(names.map((n) => n.toLowerCase())).size !== names.length)
-        return 'לכל קבוצה חייב להיות שם ייחודי.'
+        return t('לכל קבוצה חייב להיות שם ייחודי.')
     }
     for (let i = 0; i < questions.length; i++) {
       const q = questions[i]
-      const label = `שאלה ${i + 1}`
-      if (!q.text.trim()) return `${label}: חסר טקסט לשאלה.`
+      const label = t('שאלה {number}', { number: i + 1 })
+      if (!q.text.trim()) return `${label}: ${t('חסר טקסט לשאלה.')}`
       const filled = q.options.map((o) => o.trim())
       const nonEmpty = filled.filter(Boolean)
       if (q.qtype === 'multiple_choice') {
-        if (nonEmpty.length < 2) return `${label}: נדרשות לפחות שתי תשובות.`
-        if (!filled[q.correct_index]) return `${label}: יש לסמן תשובה נכונה שאינה ריקה.`
+        if (nonEmpty.length < 2) return `${label}: ${t('נדרשות לפחות שתי תשובות.')}`
+        if (!filled[q.correct_index]) return `${label}: ${t('יש לסמן תשובה נכונה שאינה ריקה.')}`
       }
-      if (q.qtype === 'poll' && nonEmpty.length < 2) return `${label}: סקר דורש לפחות שתי אפשרויות.`
-      if (q.qtype === 'ranking' && nonEmpty.length < 3) return `${label}: סדר נכון דורש לפחות שלושה פריטים.`
+      if (q.qtype === 'poll' && nonEmpty.length < 2) return `${label}: ${t('סקר דורש לפחות שתי אפשרויות.')}`
+      if (q.qtype === 'ranking' && nonEmpty.length < 3) return `${label}: ${t('סדר נכון דורש לפחות שלושה פריטים.')}`
       if (q.qtype === 'hotspot') {
-        if (!q.meta?.image_url) return `${label}: יש להעלות תמונה.`
-        if (q.meta?.x == null || q.meta?.y == null) return `${label}: יש ללחוץ על התמונה כדי לסמן את הנקודה הנכונה.`
+        if (!q.meta?.image_url) return `${label}: ${t('יש להעלות תמונה.')}`
+        if (q.meta?.x == null || q.meta?.y == null) return `${label}: ${t('יש ללחוץ על התמונה כדי לסמן את הנקודה הנכונה.')}`
       }
     }
     return ''
@@ -215,7 +217,7 @@ export default function Editor() {
     if (isNew) {
       const { data, error } = await supabase.from('quizzes').insert(quizFields).select('id').single()
       if (error) {
-        setError('שמירת החידון נכשלה.')
+        setError(t('שמירת החידון נכשלה.'))
         setSaving(false)
         return
       }
@@ -223,7 +225,7 @@ export default function Editor() {
     } else {
       const { error } = await supabase.from('quizzes').update(quizFields).eq('id', id)
       if (error) {
-        setError('שמירת החידון נכשלה.')
+        setError(t('שמירת החידון נכשלה.'))
         setSaving(false)
         return
       }
@@ -264,7 +266,7 @@ export default function Editor() {
     const { error: insErr } = await supabase.from('questions').insert(rows)
     setSaving(false)
     if (insErr) {
-      setError('שמירת השאלות נכשלה.')
+      setError(t('שמירת השאלות נכשלה.'))
       return
     }
     navigate('/')
@@ -277,14 +279,14 @@ export default function Editor() {
       <header className="topbar">
         <h1 className="brand">NGG Quiz</h1>
         <div className="topbar-actions">
-          <button className="btn ghost" onClick={() => navigate('/')}>חזרה לספרייה</button>
+          <button className="btn ghost" onClick={() => navigate('/')}>{t('חזרה לספרייה')}</button>
         </div>
       </header>
 
       <div className="page-head">
-        <h2>{isNew ? 'חידון חדש' : 'עריכת חידון'}</h2>
+        <h2>{isNew ? t('חידון חדש') : t('עריכת חידון')}</h2>
         <button className="btn primary" onClick={save} disabled={saving}>
-          {saving ? 'שומר...' : 'שמירה בספרייה'}
+          {saving ? t('שומר...') : t('שמירה בספרייה')}
         </button>
       </div>
 
@@ -292,17 +294,17 @@ export default function Editor() {
 
       <div className="card">
         <label>
-          כותרת
-          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="לדוגמה: חידון בטיחות שנתי" />
+          {t('כותרת')}
+          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={t('לדוגמה: חידון בטיחות שנתי')} />
         </label>
         <label>
-          תת-כותרת
-          <input value={subtitle} onChange={(e) => setSubtitle(e.target.value)} placeholder="לדוגמה: מחלקת הנדסה, 2026" />
+          {t('תת-כותרת')}
+          <input value={subtitle} onChange={(e) => setSubtitle(e.target.value)} placeholder={t('לדוגמה: מחלקת הנדסה, 2026')} />
         </label>
         <label>
-          תיקייה
+          {t('תיקייה')}
           <select value={folderId} onChange={(e) => setFolderId(e.target.value)}>
-            <option value="">ללא תיקייה</option>
+            <option value="">{t('ללא תיקייה')}</option>
             {folders.map((f) => (
               <option key={f.id} value={f.id}>{f.name}</option>
             ))}
@@ -310,20 +312,20 @@ export default function Editor() {
         </label>
 
         <div className="logo-field">
-          <span className="field-title">לוגו הלקוח (יוצג במסך הפתיחה)</span>
+          <span className="field-title">{t('לוגו הלקוח (יוצג במסך הפתיחה)')}</span>
           {logoUrl ? (
             <div className="logo-preview">
-              <img src={logoUrl} alt="לוגו הלקוח" />
+              <img src={logoUrl} alt={t('לוגו הלקוח')} />
               <div className="row">
                 <button className="btn" onClick={() => fileInput.current?.click()} disabled={uploading}>
-                  החלפת לוגו
+                  {t('החלפת לוגו')}
                 </button>
-                <button className="btn ghost danger" onClick={() => setLogoUrl('')}>הסרה</button>
+                <button className="btn ghost danger" onClick={() => setLogoUrl('')}>{t('הסרה')}</button>
               </div>
             </div>
           ) : (
             <button className="btn" onClick={() => fileInput.current?.click()} disabled={uploading}>
-              {uploading ? 'מעלה...' : '+ העלאת לוגו'}
+              {uploading ? t('מעלה...') : t('+ העלאת לוגו')}
             </button>
           )}
           <input
@@ -342,8 +344,8 @@ export default function Editor() {
       <div className="card teams-card">
         <div className="row space-between">
           <div>
-            <span className="field-title">מצב צוותים</span>
-            <p className="muted small no-margin">שיוך משתתפים לקבוצות וניקוד קבוצתי מצטבר</p>
+            <span className="field-title">{t('מצב צוותים')}</span>
+            <p className="muted small no-margin">{t('שיוך משתתפים לקבוצות וניקוד קבוצתי מצטבר')}</p>
           </div>
           <label className="switch">
             <input type="checkbox" checked={teamsEnabled} onChange={(e) => setTeamsEnabled(e.target.checked)} />
@@ -356,26 +358,26 @@ export default function Editor() {
             <div className="row team-mode-row">
               <label className="radio-line">
                 <input type="radio" name="team-mode" checked={teamMode === 'manual'} onChange={() => setTeamMode('manual')} />
-                שיוך ידני - כל משתתף בוחר קבוצה בהצטרפות
+                {t('שיוך ידני - כל משתתף בוחר קבוצה בהצטרפות')}
               </label>
               <label className="radio-line">
                 <input type="radio" name="team-mode" checked={teamMode === 'random'} onChange={() => setTeamMode('random')} />
-                שיוך אקראי - חלוקה אוטומטית מאוזנת
+                {t('שיוך אקראי - חלוקה אוטומטית מאוזנת')}
               </label>
             </div>
-            {teams.map((t, i) => (
+            {teams.map((name, i) => (
               <div className="row team-name-row" key={i}>
                 <span className="dot big" style={{ background: TEAM_COLORS[i % TEAM_COLORS.length] }} />
                 <input
-                  value={t}
+                  value={name}
                   maxLength={24}
-                  placeholder={`שם קבוצה ${i + 1}`}
+                  placeholder={t('שם קבוצה {number}', { number: i + 1 })}
                   onChange={(e) => setTeams((ts) => ts.map((x, j) => (j === i ? e.target.value : x)))}
                 />
                 <button
                   className="btn ghost danger"
                   disabled={teams.length <= 2}
-                  title="הסרת קבוצה"
+                  title={t('הסרת קבוצה')}
                   onClick={() => setTeams((ts) => ts.filter((_, j) => j !== i))}
                 >
                   ✕
@@ -387,7 +389,7 @@ export default function Editor() {
               disabled={teams.length >= 6}
               onClick={() => setTeams((ts) => [...ts, ''])}
             >
-              + הוספת קבוצה
+              {t('+ הוספת קבוצה')}
             </button>
           </div>
         )}
@@ -396,25 +398,25 @@ export default function Editor() {
       {questions.map((q, i) => (
         <div className="card question-card" key={i}>
           <div className="question-head">
-            <h3>שאלה {i + 1}</h3>
+            <h3>{t('שאלה {number}', { number: i + 1 })}</h3>
             <div className="row">
-              <button className="btn ghost" onClick={() => moveQuestion(i, -1)} disabled={i === 0} title="הזז למעלה">↑</button>
-              <button className="btn ghost" onClick={() => moveQuestion(i, 1)} disabled={i === questions.length - 1} title="הזז למטה">↓</button>
-              <button className="btn ghost danger" onClick={() => removeQuestion(i)} disabled={questions.length === 1} title="הסר שאלה">✕</button>
+              <button className="btn ghost" onClick={() => moveQuestion(i, -1)} disabled={i === 0} title={t('הזז למעלה')}>↑</button>
+              <button className="btn ghost" onClick={() => moveQuestion(i, 1)} disabled={i === questions.length - 1} title={t('הזז למטה')}>↓</button>
+              <button className="btn ghost danger" onClick={() => removeQuestion(i)} disabled={questions.length === 1} title={t('הסר שאלה')}>✕</button>
             </div>
           </div>
 
           <label className="inline-label">
-            סוג השאלה:
+            {t('סוג השאלה:')}
             <select value={q.qtype} onChange={(e) => updateQuestion(i, { qtype: e.target.value })}>
-              {QUESTION_TYPES.map((t) => (
-                <option key={t.value} value={t.value}>{t.icon} {t.label}</option>
+              {QUESTION_TYPES.map((qt) => (
+                <option key={qt.value} value={qt.value}>{qt.icon} {t(qt.label)}</option>
               ))}
             </select>
           </label>
 
           <label>
-            טקסט השאלה
+            {t('טקסט השאלה')}
             <input value={q.text} onChange={(e) => updateQuestion(i, { text: e.target.value })} />
           </label>
 
@@ -430,7 +432,7 @@ export default function Editor() {
                       <button
                         type="button"
                         className={`correct-mark ${q.correct_index === j ? 'on' : ''}`}
-                        title={q.correct_index === j ? 'זו התשובה הנכונה' : 'סמן כתשובה נכונה'}
+                        title={q.correct_index === j ? t('זו התשובה הנכונה') : t('סמן כתשובה נכונה')}
                         onClick={() => updateQuestion(i, { correct_index: j })}
                       >
                         ✓
@@ -439,47 +441,51 @@ export default function Editor() {
                     <input
                       className="option-input"
                       value={opt}
-                      placeholder={`${q.qtype === 'poll' ? 'אפשרות' : 'מסיח'} ${j + 1}${j < 2 ? '' : ' (רשות)'}`}
+                      placeholder={t(
+                        q.qtype === 'poll'
+                          ? (j < 2 ? 'אפשרות {number}' : 'אפשרות {number} (רשות)')
+                          : (j < 2 ? 'מסיח {number}' : 'מסיח {number} (רשות)'),
+                        { number: j + 1 }
+                      )}
                       onChange={(e) => updateOption(i, j, e.target.value)}
                     />
                     {q.qtype === 'multiple_choice' && q.correct_index === j && (
-                      <span className="correct-label">נכונה</span>
+                      <span className="correct-label">{t('נכונה')}</span>
                     )}
                   </div>
                 ))}
               </div>
               <p className="muted small">
                 {q.qtype === 'multiple_choice'
-                  ? 'לחצו על ה-✓ כדי לסמן את התשובה הנכונה.'
-                  : 'סקר - אין תשובה נכונה ואין ניקוד; המסך המוקרן יציג את ההתפלגות.'}
+                  ? t('לחצו על ה-✓ כדי לסמן את התשובה הנכונה.')
+                  : t('סקר - אין תשובה נכונה ואין ניקוד; המסך המוקרן יציג את ההתפלגות.')}
               </p>
             </>
           )}
 
           {q.qtype === 'word_cloud' && (
             <p className="muted small type-hint">
-              ☁️ המשתתפים יקלידו תשובה חופשית קצרה, והמסך המוקרן יבנה ענן מילים חי.
-              אין תשובה נכונה ואין ניקוד.
+              {t('☁️ המשתתפים יקלידו תשובה חופשית קצרה, והמסך המוקרן יבנה ענן מילים חי. אין תשובה נכונה ואין ניקוד.')}
             </p>
           )}
 
           {q.qtype === 'ranking' && (
             <>
-              <span className="field-title">הפריטים בסדר הנכון (מלמעלה למטה)</span>
+              <span className="field-title">{t('הפריטים בסדר הנכון (מלמעלה למטה)')}</span>
               <div className="rank-edit">
                 {q.options.map((opt, j) => (
                   <div className="rank-edit-row" key={j}>
                     <span className="rank-num">{j + 1}</span>
                     <input
                       value={opt}
-                      placeholder={`פריט ${j + 1}${j < 3 ? '' : ' (רשות)'}`}
+                      placeholder={t(j < 3 ? 'פריט {number}' : 'פריט {number} (רשות)', { number: j + 1 })}
                       onChange={(e) => updateOption(i, j, e.target.value)}
                     />
                   </div>
                 ))}
               </div>
               <p className="muted small">
-                המשתתפים יקבלו את הפריטים בסדר מעורבב ויצטרכו לסדרם. ניקוד חלקי לפי קרבת הסדר לתשובה.
+                {t('המשתתפים יקבלו את הפריטים בסדר מעורבב ויצטרכו לסדרם. ניקוד חלקי לפי קרבת הסדר לתשובה.')}
               </p>
             </>
           )}
@@ -489,18 +495,18 @@ export default function Editor() {
               {q.meta?.image_url ? (
                 <>
                   <div className="hotspot-frame" onClick={(e) => setHotspotTarget(i, e)}>
-                    <img src={q.meta.image_url} alt="תמונת השאלה" draggable={false} />
+                    <img src={q.meta.image_url} alt={t('תמונת השאלה')} draggable={false} />
                     {q.meta.x != null && (
                       <span className="hotspot-marker target" style={{ left: `${q.meta.x}%`, top: `${q.meta.y}%` }} />
                     )}
                   </div>
                   <p className="muted small">
                     {q.meta.x != null
-                      ? 'הנקודה הנכונה סומנה. לחצו במקום אחר כדי לעדכן.'
-                      : 'לחצו על התמונה כדי לסמן את הנקודה הנכונה.'}
+                      ? t('הנקודה הנכונה סומנה. לחצו במקום אחר כדי לעדכן.')
+                      : t('לחצו על התמונה כדי לסמן את הנקודה הנכונה.')}
                   </p>
                   <button className="btn" onClick={() => { imageTargetIndex.current = i; imageInput.current?.click() }}>
-                    החלפת תמונה
+                    {t('החלפת תמונה')}
                   </button>
                 </>
               ) : (
@@ -509,19 +515,19 @@ export default function Editor() {
                   disabled={uploadingImageFor === i}
                   onClick={() => { imageTargetIndex.current = i; imageInput.current?.click() }}
                 >
-                  {uploadingImageFor === i ? 'מעלה...' : '+ העלאת תמונה'}
+                  {uploadingImageFor === i ? t('מעלה...') : t('+ העלאת תמונה')}
                 </button>
               )}
             </div>
           )}
 
           <label>
-            הסבר לתשובה (רשות - יוצג בעת חשיפת התשובה)
+            {t('הסבר לתשובה (רשות - יוצג בעת חשיפת התשובה)')}
             <textarea
               rows={2}
               value={q.explanation}
               onChange={(e) => updateQuestion(i, { explanation: e.target.value })}
-              placeholder="לדוגמה: התשובה נכונה מפני ש..."
+              placeholder={t('לדוגמה: התשובה נכונה מפני ש...')}
             />
           </label>
         </div>
@@ -539,7 +545,7 @@ export default function Editor() {
       />
 
       <button className="btn wide" onClick={addQuestion}>
-        + הוספת שאלה ({TYPE_LABEL[questions[questions.length - 1]?.qtype || 'multiple_choice']})
+        {t('+ הוספת שאלה ({type})', { type: t(TYPE_LABEL[questions[questions.length - 1]?.qtype || 'multiple_choice']) })}
       </button>
     </div>
   )

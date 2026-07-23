@@ -3,8 +3,11 @@ import { useNavigate, useParams } from 'react-router-dom'
 import QRCode from 'qrcode'
 import { supabase } from '../supabaseClient'
 import { hostLink, playLink } from '../lib/links'
+import { useI18n } from '../lib/i18n.js'
+import LanguageToggle from '../components/LanguageToggle.jsx'
 
 function CopyField({ label, value }) {
+  const { t } = useI18n()
   const [copied, setCopied] = useState(false)
   async function copy() {
     try {
@@ -19,12 +22,13 @@ function CopyField({ label, value }) {
     <div className="copy-field">
       <span className="copy-label">{label}</span>
       <input readOnly value={value} dir="ltr" onFocus={(e) => e.target.select()} />
-      <button className="btn" onClick={copy}>{copied ? 'הועתק ✓' : 'העתקה'}</button>
+      <button className="btn" onClick={copy}>{copied ? t('הועתק ✓') : t('העתקה')}</button>
     </div>
   )
 }
 
 export default function RunSetup() {
+  const { t } = useI18n()
   const { sessionId } = useParams()
   const navigate = useNavigate()
   const [session, setSession] = useState(null)
@@ -42,7 +46,7 @@ export default function RunSetup() {
         .single()
       if (cancelled) return
       if (error || !data) {
-        setError('המפגש לא נמצא.')
+        setError(t('המפגש לא נמצא.'))
         return
       }
       setSession(data)
@@ -62,38 +66,37 @@ export default function RunSetup() {
     <div className="page narrow">
       <header className="topbar">
         <h1 className="brand">NGG Quiz</h1>
-        <button className="btn ghost" onClick={() => navigate('/')}>חזרה לספרייה</button>
+        <LanguageToggle />
+        <button className="btn ghost" onClick={() => navigate('/')}>{t('חזרה לספרייה')}</button>
       </header>
 
       <div className="card">
         <h2>{quiz?.title}</h2>
         {quiz?.subtitle && <p className="muted">{quiz.subtitle}</p>}
         <div className="pin-banner">
-          קוד הצטרפות: <span className="pin">{session.pin}</span>
+          {t('קוד הצטרפות:')} <span className="pin">{session.pin}</span>
         </div>
 
-        <h3>1. מסך מוקרן (מנחה)</h3>
+        <h3>{t('1. מסך מוקרן (מנחה)')}</h3>
         <p className="muted small">
-          פתחו קישור זה במחשב המחובר למקרן. ניהול החידון (התחלה, מעבר בין שאלות)
-          מתבצע מהמסך הזה, ולכן יש להיות מחוברים לחשבון האדמין באותו דפדפן.
+          {t('פתחו קישור זה במחשב המחובר למקרן. ניהול החידון (התחלה, מעבר בין שאלות) מתבצע מהמסך הזה, ולכן יש להיות מחוברים לחשבון האדמין באותו דפדפן.')}
         </p>
-        <CopyField label="מסך מוקרן" value={hostLink(session.id)} />
+        <CopyField label={t('מסך מוקרן')} value={hostLink(session.id)} />
 
-        <h3>2. קישור למשתתפים</h3>
+        <h3>{t('2. קישור למשתתפים')}</h3>
         <p className="muted small">
-          שתפו את הקישור או את קוד ההצטרפות עם המשתתפים. אפשר גם לסרוק את קוד ה-QR
-          שיוצג על המסך המוקרן.
+          {t('שתפו את הקישור או את קוד ההצטרפות עם המשתתפים. אפשר גם לסרוק את קוד ה-QR שיוצג על המסך המוקרן.')}
         </p>
-        <CopyField label="משתתפים" value={playLink(session.pin)} />
+        <CopyField label={t('משתתפים')} value={playLink(session.pin)} />
 
         {qr && (
           <div className="qr-wrap">
-            <img src={qr} alt="קוד QR להצטרפות" />
+            <img src={qr} alt={t('קוד QR להצטרפות')} />
           </div>
         )}
 
         <button className="btn primary wide" onClick={() => navigate(`/host/${session.id}`)}>
-          פתיחת המסך המוקרן כאן
+          {t('פתיחת המסך המוקרן כאן')}
         </button>
       </div>
     </div>

@@ -3,12 +3,15 @@ import { useParams } from 'react-router-dom'
 import { supabase } from '../supabaseClient'
 import { OPTION_SHAPES } from '../lib/optionStyle'
 import { TEAM_COLORS, teamColor, shuffled } from '../lib/questionTypes'
+import { useI18n } from '../lib/i18n.js'
+import LanguageToggle from '../components/LanguageToggle.jsx'
 
 function storageKey(pin) {
   return `nggquiz-player-${pin}`
 }
 
 export default function Play() {
+  const { t } = useI18n()
   const { pin: pinParam } = useParams()
 
   const [pin, setPin] = useState(pinParam || '')
@@ -131,7 +134,7 @@ export default function Play() {
       .neq('status', 'finished')
       .maybeSingle()
     if (sErr || !s) {
-      setError('לא נמצא חידון פעיל עם הקוד הזה.')
+      setError(t('לא נמצא חידון פעיל עם הקוד הזה.'))
       setBusy(false)
       return
     }
@@ -176,7 +179,7 @@ export default function Play() {
       .single()
     setBusy(false)
     if (pErr) {
-      setError(pErr.code === '23505' ? 'הכינוי הזה כבר תפוס במשחק. בחרו כינוי אחר.' : 'ההצטרפות נכשלה. נסו שוב.')
+      setError(pErr.code === '23505' ? t('הכינוי הזה כבר תפוס במשחק. בחרו כינוי אחר.') : t('ההצטרפות נכשלה. נסו שוב.'))
       setPendingJoin(null)
       return
     }
@@ -224,8 +227,8 @@ export default function Play() {
     return (
       <div className="stage player-stage">
         <div className="stage-inner">
-          <h1 className="stage-title">בחרו קבוצה</h1>
-          <p className="stage-subtitle">{pendingJoin.nickname}, לאיזו קבוצה תצטרפו?</p>
+          <h1 className="stage-title">{t('בחרו קבוצה')}</h1>
+          <p className="stage-subtitle">{t('{nickname}, לאיזו קבוצה תצטרפו?', { nickname: pendingJoin.nickname })}</p>
           <div className="team-pick">
             {pendingJoin.quiz.teams.map((t, i) => (
               <button
@@ -250,9 +253,10 @@ export default function Play() {
       <div className="center-screen">
         <form className="card login-card" onSubmit={join}>
           <h1 className="brand">NGG Quiz</h1>
-          <p className="muted">הצטרפות לחידון</p>
+          <div style={{ display: 'flex', justifyContent: 'flex-end' }}><LanguageToggle /></div>
+          <p className="muted">{t('הצטרפות לחידון')}</p>
           <label>
-            קוד הצטרפות
+            {t('קוד הצטרפות')}
             <input
               value={pin}
               onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))}
@@ -264,12 +268,12 @@ export default function Play() {
             />
           </label>
           <label>
-            כינוי
+            {t('כינוי')}
             <input value={nickname} onChange={(e) => setNickname(e.target.value)} maxLength={20} required />
           </label>
           {error && <div className="error-box">{error}</div>}
           <button className="btn primary" disabled={busy}>
-            {busy ? 'מצטרף...' : 'הצטרפות'}
+            {busy ? t('מצטרף...') : t('הצטרפות')}
           </button>
         </form>
       </div>
@@ -289,15 +293,15 @@ export default function Play() {
             {player.team}
           </span>
         )}
-        {rankInfo && <span className="chip">{rankInfo.score} נק'</span>}
+        {rankInfo && <span className="chip">{t("{score} נק'", { score: rankInfo.score })}</span>}
       </div>
 
       {session.status === 'lobby' && (
         <div className="stage-inner">
-          <h1 className="stage-title">אתם בפנים! 🎉</h1>
+          <h1 className="stage-title">{t('אתם בפנים! 🎉')}</h1>
           <p className="stage-subtitle">
-            {player.team ? `אתם בקבוצת "${player.team}". ` : ''}
-            חכו שהמנחה יתחיל את החידון. שימו לב למסך המוקרן.
+            {player.team ? t('אתם בקבוצת "{team}". ', { team: player.team }) : ''}
+            {t('חכו שהמנחה יתחיל את החידון. שימו לב למסך המוקרן.')}
           </p>
         </div>
       )}
@@ -305,12 +309,12 @@ export default function Play() {
       {session.status === 'question' && currentQuestion && (
         <div className="stage-inner full" key={`q-${session.current_index}`}>
           <div className="question-meta">
-            <span className="meta-pill">שאלה {session.current_index + 1}</span>
+            <span className="meta-pill">{t('שאלה {number}', { number: session.current_index + 1 })}</span>
           </div>
           {myAnswer ? (
             <div className="wait-note">
-              <h1 className="stage-title">התשובה נקלטה ✓</h1>
-              <p className="stage-subtitle">ממתינים לשאר המשתתפים...</p>
+              <h1 className="stage-title">{t('התשובה נקלטה ✓')}</h1>
+              <p className="stage-subtitle">{t('ממתינים לשאר המשתתפים...')}</p>
             </div>
           ) : (
             <>
@@ -344,35 +348,35 @@ export default function Play() {
                     value={cloudText}
                     onChange={(e) => setCloudText(e.target.value)}
                     maxLength={40}
-                    placeholder="הקלידו תשובה קצרה..."
+                    placeholder={t('הקלידו תשובה קצרה...')}
                     autoFocus
                   />
-                  <button className="btn light xl" disabled={!cloudText.trim()}>שליחה ☁️</button>
+                  <button className="btn light xl" disabled={!cloudText.trim()}>{t('שליחה ☁️')}</button>
                 </form>
               )}
 
               {currentQuestion.qtype === 'ranking' && (
                 <div className="rank-play">
-                  <p className="stage-subtitle">סדרו את הפריטים בסדר הנכון (מלמעלה למטה)</p>
+                  <p className="stage-subtitle">{t('סדרו את הפריטים בסדר הנכון (מלמעלה למטה)')}</p>
                   {rankOrder.map((origIdx, pos) => (
                     <div className="rank-item" key={origIdx}>
                       <span className="rank-num">{pos + 1}</span>
                       <span className="rank-text">{currentQuestion.options[origIdx]}</span>
                       <span className="rank-arrows">
-                        <button onClick={() => moveRankItem(pos, -1)} disabled={pos === 0} title="למעלה">↑</button>
-                        <button onClick={() => moveRankItem(pos, 1)} disabled={pos === rankOrder.length - 1} title="למטה">↓</button>
+                        <button onClick={() => moveRankItem(pos, -1)} disabled={pos === 0} title={t('למעלה')}>↑</button>
+                        <button onClick={() => moveRankItem(pos, 1)} disabled={pos === rankOrder.length - 1} title={t('למטה')}>↓</button>
                       </span>
                     </div>
                   ))}
                   <button className="btn light xl" onClick={() => submitAnswer({ answer: { order: rankOrder } })}>
-                    שליחת הסדר
+                    {t('שליחת הסדר')}
                   </button>
                 </div>
               )}
 
               {currentQuestion.qtype === 'hotspot' && (
                 <div className="hotspot-play">
-                  <p className="stage-subtitle">הקישו על המיקום הנכון בתמונה</p>
+                  <p className="stage-subtitle">{t('הקישו על המיקום הנכון בתמונה')}</p>
                   <div
                     className="hotspot-frame"
                     onClick={(e) => {
@@ -383,7 +387,7 @@ export default function Play() {
                       })
                     }}
                   >
-                    <img src={currentQuestion.meta?.image_url} alt="תמונת השאלה" draggable={false} />
+                    <img src={currentQuestion.meta?.image_url} alt={t('תמונת השאלה')} draggable={false} />
                     {tapPos && <span className="hotspot-marker mine" style={{ left: `${tapPos.x}%`, top: `${tapPos.y}%` }} />}
                   </div>
                   <button
@@ -391,7 +395,7 @@ export default function Play() {
                     disabled={!tapPos}
                     onClick={() => submitAnswer({ answer: tapPos })}
                   >
-                    שליחת המיקום
+                    {t('שליחת המיקום')}
                   </button>
                 </div>
               )}
@@ -404,42 +408,42 @@ export default function Play() {
         <div className="stage-inner" key={`r-${session.current_index}`}>
           {currentQuestion && ['poll', 'word_cloud'].includes(currentQuestion.qtype) ? (
             <>
-              <h1 className="stage-title">{!myAnswer || myAnswer.pending ? 'לא נקלטה תשובה הפעם' : 'תודה על השיתוף! 🙌'}</h1>
-              <p className="stage-subtitle">התוצאות מוצגות על המסך המוקרן.</p>
+              <h1 className="stage-title">{!myAnswer || myAnswer.pending ? t('לא נקלטה תשובה הפעם') : t('תודה על השיתוף! 🙌')}</h1>
+              <p className="stage-subtitle">{t('התוצאות מוצגות על המסך המוקרן.')}</p>
             </>
           ) : !myAnswer || myAnswer.pending ? (
-            <h1 className="stage-title">לא נקלטה תשובה הפעם 😅</h1>
+            <h1 className="stage-title">{t('לא נקלטה תשובה הפעם 😅')}</h1>
           ) : myAnswer.is_correct ? (
             <>
               <h1 className="stage-title correct-text">
-                {currentQuestion?.qtype === 'multiple_choice' ? 'נכון! 🎉' : 'מדויק! 🎯'}
+                {currentQuestion?.qtype === 'multiple_choice' ? t('נכון! 🎉') : t('מדויק! 🎯')}
               </h1>
-              <p className="points-pop">+{myAnswer.points} נקודות</p>
+              <p className="points-pop">{t('+{points} נקודות', { points: myAnswer.points })}</p>
             </>
           ) : myAnswer.points > 0 ? (
             <>
-              <h1 className="stage-title correct-text">כמעט! 👏</h1>
-              <p className="points-pop">+{myAnswer.points} נקודות</p>
+              <h1 className="stage-title correct-text">{t('כמעט! 👏')}</h1>
+              <p className="points-pop">{t('+{points} נקודות', { points: myAnswer.points })}</p>
             </>
           ) : (
-            <h1 className="stage-title wrong-text">לא נכון הפעם 💪</h1>
+            <h1 className="stage-title wrong-text">{t('לא נכון הפעם 💪')}</h1>
           )}
           {currentQuestion?.explanation && (
             <div className="explain-box">💡 {currentQuestion.explanation}</div>
           )}
           {rankInfo && currentQuestion && !['poll', 'word_cloud'].includes(currentQuestion.qtype) && (
-            <p className="stage-subtitle">מקום {rankInfo.rank} מתוך {rankInfo.total}</p>
+            <p className="stage-subtitle">{t('מקום {rank} מתוך {total}', { rank: rankInfo.rank, total: rankInfo.total })}</p>
           )}
         </div>
       )}
 
       {session.status === 'leaderboard' && (
         <div className="stage-inner" key={`l-${session.current_index}`}>
-          <h1 className="stage-title">המצב שלך</h1>
+          <h1 className="stage-title">{t('המצב שלך')}</h1>
           {rankInfo && (
             <>
-              <p className="points-pop">{rankInfo.score} נקודות</p>
-              <p className="stage-subtitle">מקום {rankInfo.rank} מתוך {rankInfo.total}</p>
+              <p className="points-pop">{t('{score} נקודות', { score: rankInfo.score })}</p>
+              <p className="stage-subtitle">{t('מקום {rank} מתוך {total}', { rank: rankInfo.rank, total: rankInfo.total })}</p>
             </>
           )}
         </div>
@@ -447,12 +451,12 @@ export default function Play() {
 
       {session.status === 'finished' && (
         <div className="stage-inner">
-          <h1 className="stage-title">זהו, נגמר! 🏁</h1>
+          <h1 className="stage-title">{t('זהו, נגמר! 🏁')}</h1>
           {rankInfo && (
             <>
-              <p className="points-pop">{rankInfo.score} נקודות</p>
+              <p className="points-pop">{t('{score} נקודות', { score: rankInfo.score })}</p>
               <p className="stage-subtitle">
-                {rankInfo.rank === 1 ? 'מקום ראשון - כל הכבוד! 🏆' : `סיימתם במקום ${rankInfo.rank} מתוך ${rankInfo.total}`}
+                {rankInfo.rank === 1 ? t('מקום ראשון - כל הכבוד! 🏆') : t('סיימתם במקום {rank} מתוך {total}', { rank: rankInfo.rank, total: rankInfo.total })}
               </p>
             </>
           )}
