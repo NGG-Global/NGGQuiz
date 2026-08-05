@@ -77,23 +77,67 @@ export default function Play() {
     return () => { cancelled = true }
   }, [session?.quiz_id])
 
-  // follow the session state in realtime
+  // follow the session state in realtime, with a resync safety net:
+  // realtime updates are lost while the phone is locked, the tab is in
+  // the background or the network blips, and missed events are never
+  // replayed - so we also refetch on (re)connect and on wake, and keep
+  // a slow poll running as a last resort
   useEffect(() => {
     if (!session?.id) return
+    const sessionId = session.id
+    let cancelled = false
+
+    async function sync() {
+      const { data } = await supabase
+        .from('game_sessions')
+        .select('*')
+        .eq('id', sessionId)
+        .single()
+      if (cancelled || !data) return
+      setSession((prev) =>
+        prev &&
+        prev.status === data.status &&
+        prev.current_index === data.current_index &&
+        prev.question_started_at === data.question_started_at
+          ? prev
+          : data
+      )
+    }
+
     const channel = supabase
-      .channel(`play-${session.id}`)
+      .channel(`play-${sessionId}`)
       .on(
         'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'game_sessions', filter: `id=eq.${session.id}` },
+        { event: 'UPDATE', schema: 'public', table: 'game_sessions', filter: `id=eq.${sessionId}` },
         (payload) => setSession(payload.new)
       )
-      .subscribe()
-    return () => { supabase.removeChannel(channel) }
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') sync()
+      })
+
+    const onWake = () => {
+      if (document.visibilityState === 'visible') sync()
+    }
+    document.addEventListener('visibilitychange', onWake)
+    window.addEventListener('focus', onWake)
+    window.addEventListener('online', onWake)
+    const poll = setInterval(sync, 5000)
+
+    return () => {
+      cancelled = true
+      clearInterval(poll)
+      document.removeEventListener('visibilitychange', onWake)
+      window.removeEventListener('focus', onWake)
+      window.removeEventListener('online', onWake)
+      supabase.removeChannel(channel)
+    }
   }, [session?.id])
 
   // reset per-question input state when a new question starts
   useEffect(() => {
     if (!currentQuestion) return
+    answering.current = false // a submit that hung on the previous question must not block this one
+    setError('')
     setCloudText('')
     setTapPos(null)
     if (currentQuestion.qtype === 'ranking') {
@@ -193,21 +237,45 @@ export default function Play() {
   async function submitAnswer(payload) {
     if (!currentQuestion || myAnswer || answering.current) return
     answering.current = true
-    const { data, error } = await supabase
-      .from('answers')
-      .insert({
-        session_id: session.id,
-        question_id: currentQuestion.id,
-        player_id: player.id,
-        ...payload,
-      })
-      .select('is_correct, points, answer_index, answer')
-      .single()
-    answering.current = false
-    if (!error && data) {
-      setMyAnswers((m) => ({ ...m, [currentQuestion.id]: data }))
-    } else if (error?.code === '23505') {
-      setMyAnswers((m) => ({ ...m, [currentQuestion.id]: { pending: true } }))
+    setError('')
+    const questionId = currentQuestion.id
+    try {
+      let request = supabase
+        .from('answers')
+        .insert({
+          session_id: session.id,
+          question_id: questionId,
+          player_id: player.id,
+          ...payload,
+        })
+        .select('is_correct, points, answer_index, answer')
+        .single()
+      // don't let a request that hangs on a flaky mobile network keep the player stuck
+      if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+        request = request.abortSignal(AbortSignal.timeout(10000))
+      }
+      const { data, error: insertError } = await request
+      if (!insertError && data) {
+        setMyAnswers((m) => ({ ...m, [questionId]: data }))
+      } else if (insertError?.code === '23505') {
+        // an earlier attempt did land - mark it so the player moves on
+        setMyAnswers((m) => ({ ...m, [questionId]: { pending: true } }))
+      } else if (insertError) {
+        // the host may have already closed the question - resync so the
+        // screen follows the game instead of freezing; otherwise ask the
+        // player to try again rather than failing silently
+        const { data: s } = await supabase
+          .from('game_sessions')
+          .select('*')
+          .eq('id', session.id)
+          .single()
+        if (s) setSession(s)
+        if (!s || (s.status === 'question' && s.current_index === session.current_index)) {
+          setError(t('שליחת התשובה נכשלה. בדקו את החיבור ונסו שוב.'))
+        }
+      }
+    } finally {
+      answering.current = false
     }
   }
 
@@ -311,6 +379,7 @@ export default function Play() {
           <div className="question-meta">
             <span className="meta-pill">{t('שאלה {number}', { number: session.current_index + 1 })}</span>
           </div>
+          {error && <div className="error-box">{error}</div>}
           {myAnswer ? (
             <div className="wait-note">
               <h1 className="stage-title">{t('התשובה נקלטה ✓')}</h1>
