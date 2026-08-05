@@ -187,6 +187,7 @@ export const EN = {
   "שליחה ☁️": "Send ☁️",
   "שליחת המיקום": "Submit location",
   "שליחת הסדר": "Submit order",
+  "שליחת התשובה נכשלה. בדקו את החיבור ונסו שוב.": "Sending your answer failed. Check your connection and try again.",
   "שם התיקייה": "Folder name",
   "שם קבוצה {number}": "Team name {number}",
   "שמירה בספרייה": "Save to library",
