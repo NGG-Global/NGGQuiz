@@ -2,7 +2,9 @@ name: Deploy to GitHub Pages
 
 on:
   push:
-    branches: [main]
+    # the repository's default branch - a merge must reach the live site
+    # without a manual dispatch
+    branches: [claude/interactive-quiz-platform-dyfp39, main]
   workflow_dispatch:
 
 permissions:

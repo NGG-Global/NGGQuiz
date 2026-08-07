@@ -25,6 +25,8 @@ export default function Play() {
   const [rankInfo, setRankInfo] = useState(null)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [loadFailed, setLoadFailed] = useState(false)
+  const [reloadToken, setReloadToken] = useState(0)
   const answering = useRef(false)
 
   // per-question input state
@@ -41,9 +43,14 @@ export default function Play() {
   // restore a previous join after refresh
   useEffect(() => {
     if (!pinParam) return
-    const saved = sessionStorage.getItem(storageKey(pinParam))
-    if (!saved) return
-    const { playerId, sessionId } = JSON.parse(saved)
+    let saved
+    try {
+      saved = JSON.parse(sessionStorage.getItem(storageKey(pinParam)) || 'null')
+    } catch {
+      saved = null // corrupted entry - fall back to the join screen
+    }
+    if (!saved?.playerId || !saved?.sessionId) return
+    const { playerId, sessionId } = saved
     let cancelled = false
     async function restore() {
       const [{ data: s }, { data: p }] = await Promise.all([
@@ -58,24 +65,73 @@ export default function Play() {
     return () => { cancelled = true }
   }, [pinParam])
 
-  // load quiz info + questions once the session is known
+  // load quiz info + questions once the session is known.
+  // This must not fail silently: without the questions the player sees an
+  // empty screen for the rest of the game, so a failed fetch is retried
+  // with backoff and surfaced only if every attempt fails.
   useEffect(() => {
     if (!session?.quiz_id) return
+    const quizId = session.quiz_id
     let cancelled = false
-    Promise.all([
-      supabase.from('quizzes').select('teams_enabled, team_mode, teams, title').eq('id', session.quiz_id).single(),
-      supabase
-        .from('questions')
-        .select('id, qtype, text, options, meta, position, explanation')
-        .eq('quiz_id', session.quiz_id)
-        .order('position'),
-    ]).then(([{ data: qz }, { data: qs }]) => {
+    let timer = null
+
+    async function load(attempt = 0) {
+      const [{ data: qz }, { data: qs }] = await Promise.all([
+        supabase.from('quizzes').select('teams_enabled, team_mode, teams, title').eq('id', quizId).single(),
+        supabase
+          .from('questions')
+          .select('id, qtype, text, options, meta, position, explanation')
+          .eq('quiz_id', quizId)
+          .order('position'),
+      ])
       if (cancelled) return
       if (qz) setQuiz(qz)
-      if (qs) setQuestions(qs)
-    })
+      if (qs?.length) {
+        setQuestions(qs)
+        setLoadFailed(false)
+        return
+      }
+      // the request failed, or came back without questions - retry with
+      // backoff, and give the player a retry button once we give up, so
+      // nobody is left staring at an empty screen
+      if (attempt >= 4) {
+        setLoadFailed(true)
+        return
+      }
+      timer = setTimeout(() => load(attempt + 1), 1000 * 2 ** attempt)
+    }
+
+    load()
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
+  }, [session?.quiz_id, reloadToken])
+
+  // restore my answers for this session (a refresh mid-game would
+  // otherwise let the player answer again - which the unique constraint
+  // rejects - and show "no answer received" on the reveal screen)
+  useEffect(() => {
+    if (!session?.id || !player?.id) return
+    let cancelled = false
+    supabase
+      .from('answers')
+      .select('question_id, is_correct, points, answer_index, answer')
+      .eq('session_id', session.id)
+      .eq('player_id', player.id)
+      .then(({ data }) => {
+        if (cancelled || !data?.length) return
+        setMyAnswers((m) => {
+          const next = { ...m }
+          data.forEach((a) => {
+            // never overwrite a locally known result with a stale row
+            if (!next[a.question_id] || next[a.question_id].pending) next[a.question_id] = a
+          })
+          return next
+        })
+      })
     return () => { cancelled = true }
-  }, [session?.quiz_id])
+  }, [session?.id, player?.id])
 
   // follow the session state in realtime, with a resync safety net:
   // realtime updates are lost while the phone is locked, the tab is in
@@ -177,7 +233,14 @@ export default function Play() {
       .eq('pin', cleanPin)
       .neq('status', 'finished')
       .maybeSingle()
-    if (sErr || !s) {
+    if (sErr) {
+      // a failed request is not a wrong PIN - saying so sends the player
+      // hunting for a code that was correct all along
+      setError(t('אין כרגע חיבור לשרת. בדקו את החיבור לאינטרנט ונסו שוב.'))
+      setBusy(false)
+      return
+    }
+    if (!s) {
       setError(t('לא נמצא חידון פעיל עם הקוד הזה.'))
       setBusy(false)
       return
@@ -371,6 +434,30 @@ export default function Play() {
             {player.team ? t('אתם בקבוצת "{team}". ', { team: player.team }) : ''}
             {t('חכו שהמנחה יתחיל את החידון. שימו לב למסך המוקרן.')}
           </p>
+        </div>
+      )}
+
+      {session.status === 'question' && !currentQuestion && (
+        // the question is open but its content has not arrived on this
+        // device yet - show progress (and a way out) instead of a blank screen
+        <div className="stage-inner">
+          {loadFailed ? (
+            <>
+              <h1 className="stage-title">{t('לא הצלחנו לטעון את השאלה 😕')}</h1>
+              <p className="stage-subtitle">{t('בדקו את החיבור לאינטרנט ונסו שוב.')}</p>
+              <button
+                className="btn light xl"
+                onClick={() => { setLoadFailed(false); setReloadToken((n) => n + 1) }}
+              >
+                {t('טעינה מחדש')}
+              </button>
+            </>
+          ) : (
+            <>
+              <div className="spinner" />
+              <p className="stage-subtitle">{t('טוען את השאלה...')}</p>
+            </>
+          )}
         </div>
       )}
 

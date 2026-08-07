@@ -63,8 +63,25 @@ export default function Host({ user }) {
     return () => { cancelled = true }
   }, [sessionId])
 
-  // realtime subscriptions
+  // realtime subscriptions, plus a resync safety net - realtime events
+  // that arrive while the projector machine is asleep or offline are
+  // never replayed, which would leave the host screen showing a stale
+  // player list and answer count for the rest of the game
   useEffect(() => {
+    let cancelled = false
+
+    async function resync() {
+      const [{ data: s }, { data: ps }, { data: as }] = await Promise.all([
+        supabase.from('game_sessions').select('*').eq('id', sessionId).single(),
+        supabase.from('players').select('*').eq('session_id', sessionId).order('joined_at'),
+        supabase.from('answers').select('*').eq('session_id', sessionId),
+      ])
+      if (cancelled) return
+      if (s) setSession((prev) => (prev && prev.status === s.status && prev.current_index === s.current_index ? prev : s))
+      if (ps) setPlayers(ps)
+      if (as) setAnswers(as)
+    }
+
     const channel = supabase
       .channel(`host-${sessionId}`)
       .on(
@@ -82,8 +99,24 @@ export default function Host({ user }) {
         { event: 'INSERT', schema: 'public', table: 'answers', filter: `session_id=eq.${sessionId}` },
         (payload) => setAnswers((as) => (as.some((a) => a.id === payload.new.id) ? as : [...as, payload.new]))
       )
-      .subscribe()
-    return () => { supabase.removeChannel(channel) }
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') resync()
+      })
+
+    const onWake = () => {
+      if (document.visibilityState === 'visible') resync()
+    }
+    document.addEventListener('visibilitychange', onWake)
+    window.addEventListener('online', onWake)
+    const poll = setInterval(resync, 10000)
+
+    return () => {
+      cancelled = true
+      clearInterval(poll)
+      document.removeEventListener('visibilitychange', onWake)
+      window.removeEventListener('online', onWake)
+      supabase.removeChannel(channel)
+    }
   }, [sessionId])
 
   // refresh scores + answers when the phase changes (scores are updated by a DB trigger)
@@ -115,7 +148,10 @@ export default function Host({ user }) {
     }
     refresh()
     return () => { cancelled = true }
-  }, [session?.status, session?.current_index]) // eslint-disable-line react-hooks/exhaustive-deps
+    // currentQuestion is part of the key: on a host refresh mid-question the
+    // session arrives before the questions, so without it the answers for the
+    // open question are never fetched and the screen shows "answered: 0"
+  }, [session?.status, session?.current_index, currentQuestion?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const currentAnswers = useMemo(
     () => (currentQuestion ? answers.filter((a) => a.question_id === currentQuestion.id) : []),
