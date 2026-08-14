@@ -2,9 +2,11 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { supabase } from '../supabaseClient'
 import { OPTION_SHAPES } from '../lib/optionStyle'
+import { deadlineMs } from '../lib/timer'
 import { TEAM_COLORS, teamColor, shuffled } from '../lib/questionTypes'
 import { useI18n } from '../lib/i18n.js'
 import LanguageToggle from '../components/LanguageToggle.jsx'
+import Countdown, { useSecondsLeft } from '../components/Countdown.jsx'
 
 function storageKey(pin) {
   return `nggquiz-player-${pin}`
@@ -37,6 +39,9 @@ export default function Play() {
     [session, questions]
   )
   const myAnswer = currentQuestion ? myAnswers[currentQuestion.id] : null
+  const timeLimit = (session?.status === 'question' && currentQuestion?.time_limit) || null
+  const timeLeft = useSecondsLeft(session?.question_started_at, timeLimit)
+  const timeUp = timeLimit != null && timeLeft === 0
 
   // restore a previous join after refresh
   useEffect(() => {
@@ -66,7 +71,7 @@ export default function Play() {
       supabase.from('quizzes').select('teams_enabled, team_mode, teams, title').eq('id', session.quiz_id).single(),
       supabase
         .from('questions')
-        .select('id, qtype, text, options, meta, position, explanation')
+        .select('id, qtype, text, options, meta, position, explanation, time_limit')
         .eq('quiz_id', session.quiz_id)
         .order('position'),
     ]).then(([{ data: qz }, { data: qs }]) => {
@@ -236,6 +241,10 @@ export default function Play() {
 
   async function submitAnswer(payload) {
     if (!currentQuestion || myAnswer || answering.current) return
+    // a timed question stops accepting answers at its deadline (the
+    // database enforces the same deadline, with a small grace window)
+    const deadline = deadlineMs(session.question_started_at, currentQuestion.time_limit)
+    if (deadline != null && Date.now() >= deadline) return
     answering.current = true
     setError('')
     const questionId = currentQuestion.id
@@ -270,7 +279,8 @@ export default function Play() {
           .eq('id', session.id)
           .single()
         if (s) setSession(s)
-        if (!s || (s.status === 'question' && s.current_index === session.current_index)) {
+        const missedDeadline = deadline != null && Date.now() >= deadline
+        if (!missedDeadline && (!s || (s.status === 'question' && s.current_index === session.current_index))) {
           setError(t('שליחת התשובה נכשלה. בדקו את החיבור ונסו שוב.'))
         }
       }
@@ -378,12 +388,18 @@ export default function Play() {
         <div className="stage-inner full" key={`q-${session.current_index}`}>
           <div className="question-meta">
             <span className="meta-pill">{t('שאלה {number}', { number: session.current_index + 1 })}</span>
+            {timeLimit && !myAnswer && <Countdown left={timeLeft ?? timeLimit} />}
           </div>
           {error && <div className="error-box">{error}</div>}
           {myAnswer ? (
             <div className="wait-note">
               <h1 className="stage-title">{t('התשובה נקלטה ✓')}</h1>
               <p className="stage-subtitle">{t('ממתינים לשאר המשתתפים...')}</p>
+            </div>
+          ) : timeUp ? (
+            <div className="wait-note">
+              <h1 className="stage-title">{t('הזמן נגמר ⏱')}</h1>
+              <p className="stage-subtitle">{t('ממתינים לחשיפת התשובה...')}</p>
             </div>
           ) : (
             <>

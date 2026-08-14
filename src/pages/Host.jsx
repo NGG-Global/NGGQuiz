@@ -4,9 +4,11 @@ import QRCode from 'qrcode'
 import { supabase } from '../supabaseClient'
 import { playLink } from '../lib/links'
 import Elapsed from '../components/Elapsed.jsx'
+import Countdown, { useSecondsLeft } from '../components/Countdown.jsx'
 import Confetti from '../components/Confetti.jsx'
 import WordCloud from '../components/WordCloud.jsx'
 import { OPTION_SHAPES } from '../lib/optionStyle'
+import { deadlineMs } from '../lib/timer'
 import { TEAM_COLORS, kendallSimilarity } from '../lib/questionTypes'
 import { useI18n } from '../lib/i18n.js'
 
@@ -30,6 +32,8 @@ export default function Host({ user }) {
   )
   const isHost = session && user && session.host_id === user.id
   const teamsOn = quiz?.teams_enabled && quiz?.teams?.length
+  const timeLimit = (session?.status === 'question' && currentQuestion?.time_limit) || null
+  const timeLeft = useSecondsLeft(session?.question_started_at, timeLimit)
 
   // initial load
   useEffect(() => {
@@ -149,6 +153,23 @@ export default function Host({ user }) {
       setError(t('רק מנהל המפגש יכול לשלוט בחידון. ודאו שאתם מחוברים לחשבון המתאים.'))
     }
   }
+
+  // A timed question closes itself: at the deadline the host screen
+  // reveals the answer, exactly as if the button had been pressed. The
+  // deadline is enforced in the database as well, so a late answer never
+  // scores even if this timer misses (host screen closed, tab throttled).
+  useEffect(() => {
+    if (!isHost || !timeLimit) return
+    const deadline = deadlineMs(session.question_started_at, timeLimit)
+    if (deadline == null) return
+    const wait = deadline - Date.now()
+    if (wait <= 0) {
+      reveal()
+      return
+    }
+    const timer = setTimeout(reveal, wait)
+    return () => clearTimeout(timer)
+  }, [isHost, timeLimit, session?.question_started_at, currentQuestion?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function startQuestion(index) {
     const { error } = await supabase.rpc('start_question', { p_session: sessionId, p_index: index })
@@ -278,9 +299,14 @@ export default function Host({ user }) {
         <div className="stage-inner" key={`q-${session.current_index}`}>
           <div className="question-meta">
             <span className="meta-pill">{t('שאלה {number} / {total}', { number: session.current_index + 1, total: questions.length })}</span>
-            <Elapsed since={session.question_started_at} />
+            {timeLimit ? <Countdown left={timeLeft ?? timeLimit} /> : <Elapsed since={session.question_started_at} />}
             <span className="meta-pill">{t('ענו: {answered}/{total}', { answered: currentAnswers.length, total: players.length })}</span>
           </div>
+          {timeLimit && (
+            <div className="timer-bar" aria-hidden="true">
+              <div style={{ width: `${((timeLeft ?? timeLimit) / timeLimit) * 100}%` }} />
+            </div>
+          )}
           <h1 className="stage-title">{currentQuestion.text}</h1>
 
           {(currentQuestion.qtype === 'multiple_choice' || currentQuestion.qtype === 'poll') && (

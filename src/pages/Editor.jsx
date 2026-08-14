@@ -2,15 +2,17 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { supabase } from '../supabaseClient'
 import { QUESTION_TYPES, TEAM_COLORS } from '../lib/questionTypes'
+import { TIMER_PRESETS } from '../lib/timer'
 import { useI18n } from '../lib/i18n.js'
 
-function blankQuestion(qtype = 'multiple_choice') {
+function blankQuestion(qtype = 'multiple_choice', timeLimit = null) {
   return {
     qtype,
     text: '',
     options: ['', '', '', ''],
     correct_index: 0,
     explanation: '',
+    time_limit: timeLimit,
     meta: {},
   }
 }
@@ -80,6 +82,7 @@ export default function Editor() {
                 options: [...opts, '', '', ''].slice(0, Math.max(opts.length, 2, 4)),
                 correct_index: q.correct_index ?? 0,
                 explanation: q.explanation || '',
+                time_limit: q.time_limit ?? null,
                 meta: q.meta || {},
               }
             })
@@ -118,8 +121,15 @@ export default function Editor() {
   }
 
   function addQuestion() {
-    // a new question inherits the type of the previous question
-    setQuestions((qs) => [...qs, blankQuestion(qs[qs.length - 1]?.qtype || 'multiple_choice')])
+    // a new question inherits the type and the timer of the previous question
+    setQuestions((qs) => {
+      const prev = qs[qs.length - 1]
+      return [...qs, blankQuestion(prev?.qtype || 'multiple_choice', prev?.time_limit ?? null)]
+    })
+  }
+
+  function applyTimerToAll(limit) {
+    setQuestions((qs) => qs.map((q) => ({ ...q, time_limit: limit })))
   }
 
   async function uploadToBucket(bucket, file) {
@@ -242,6 +252,7 @@ export default function Editor() {
         correct_index: null,
         meta: null,
         explanation: q.explanation.trim() || null,
+        time_limit: q.time_limit || null,
       }
       if (q.qtype === 'multiple_choice') {
         const kept = []
@@ -406,14 +417,39 @@ export default function Editor() {
             </div>
           </div>
 
-          <label className="inline-label">
-            {t('סוג השאלה:')}
-            <select value={q.qtype} onChange={(e) => updateQuestion(i, { qtype: e.target.value })}>
-              {QUESTION_TYPES.map((qt) => (
-                <option key={qt.value} value={qt.value}>{qt.icon} {t(qt.label)}</option>
-              ))}
-            </select>
-          </label>
+          <div className="question-config">
+            <label className="inline-label">
+              {t('סוג השאלה:')}
+              <select value={q.qtype} onChange={(e) => updateQuestion(i, { qtype: e.target.value })}>
+                {QUESTION_TYPES.map((qt) => (
+                  <option key={qt.value} value={qt.value}>{qt.icon} {t(qt.label)}</option>
+                ))}
+              </select>
+            </label>
+            <label className="inline-label">
+              {t('הגבלת זמן:')}
+              <select
+                value={q.time_limit ?? ''}
+                onChange={(e) => updateQuestion(i, { time_limit: e.target.value ? Number(e.target.value) : null })}
+              >
+                <option value="">{t('ללא הגבלת זמן')}</option>
+                {TIMER_PRESETS.map((sec) => (
+                  <option key={sec} value={sec}>⏱ {t('{seconds} שניות', { seconds: sec })}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <p className="muted small timer-hint">
+            {q.time_limit
+              ? t('⏱ השאלה תיסגר אוטומטית אחרי {seconds} שניות והתשובה תיחשף.', { seconds: q.time_limit })
+              : t('ללא הגבלת זמן - המנחה חושף את התשובה בלחיצה.')}
+            {questions.length > 1 && (
+              <button type="button" className="link-btn" onClick={() => applyTimerToAll(q.time_limit ?? null)}>
+                {t('החלה על כל השאלות')}
+              </button>
+            )}
+          </p>
 
           <label>
             {t('טקסט השאלה')}
