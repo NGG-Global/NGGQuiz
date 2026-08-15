@@ -141,7 +141,7 @@ export default function Library({ user }) {
     }
     const { data: qs, error: qErr } = await supabase
       .from('questions')
-      .select('position, qtype, text, options, correct_index, meta, explanation')
+      .select('position, qtype, text, options, correct_index, meta, explanation, time_limit')
       .eq('quiz_id', quiz.id)
     let copied = 0
     if (!qErr && qs?.length) {
