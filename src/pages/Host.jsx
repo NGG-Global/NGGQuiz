@@ -7,6 +7,7 @@ import Elapsed from '../components/Elapsed.jsx'
 import Countdown, { useSecondsLeft } from '../components/Countdown.jsx'
 import Confetti from '../components/Confetti.jsx'
 import WordCloud from '../components/WordCloud.jsx'
+import PollChart from '../components/PollChart.jsx'
 import { OPTION_SHAPES } from '../lib/optionStyle'
 import { deadlineMs } from '../lib/timer'
 import { TEAM_COLORS, kendallSimilarity } from '../lib/questionTypes'
@@ -228,6 +229,11 @@ export default function Host({ user }) {
     ? [...(currentQuestion.options || [])].sort((a, b) => String(a).localeCompare(String(b), 'he'))
     : []
 
+  const optionCounts = (currentQuestion?.options || []).map(
+    (_, i) => currentAnswers.filter((a) => a.answer_index === i).length
+  )
+  const maxOptionCount = Math.max(1, ...optionCounts)
+
   const rankingAvgAccuracy = (() => {
     if (currentQuestion?.qtype !== 'ranking') return null
     const sims = currentAnswers
@@ -346,7 +352,7 @@ export default function Host({ user }) {
           <h1 className="stage-title">{currentQuestion.text}</h1>
 
           {(currentQuestion.qtype === 'multiple_choice' || currentQuestion.qtype === 'poll') && (
-            <div className="options-grid">
+            <div className={`options-grid${currentQuestion.options.length > 4 ? ' many' : ''}`}>
               {currentQuestion.options.map((opt, i) => (
                 <div className={`option-tile color-${i}`} style={{ '--i': i }} key={i}>
                   <span className="shape">{OPTION_SHAPES[i]}</span>
@@ -397,31 +403,30 @@ export default function Host({ user }) {
         <div className="stage-inner" key={`r-${session.current_index}`}>
           <h1 className="stage-title">{currentQuestion.text}</h1>
 
-          {(currentQuestion.qtype === 'multiple_choice' || currentQuestion.qtype === 'poll') && (
-            <div className="options-grid">
+          {currentQuestion.qtype === 'multiple_choice' && (
+            <div className={`options-grid${currentQuestion.options.length > 4 ? ' many' : ''}`}>
               {currentQuestion.options.map((opt, i) => {
-                const count = currentAnswers.filter((a) => a.answer_index === i).length
-                const max = Math.max(1, ...currentQuestion.options.map(
-                  (_, j) => currentAnswers.filter((a) => a.answer_index === j).length
-                ))
-                const isPoll = currentQuestion.qtype === 'poll'
-                const correct = !isPoll && i === currentQuestion.correct_index
+                const correct = i === currentQuestion.correct_index
                 return (
                   <div
-                    className={`option-tile color-${i} ${isPoll ? '' : correct ? 'correct' : 'dimmed'}`}
+                    className={`option-tile color-${i} ${correct ? 'correct' : 'dimmed'}`}
                     style={{ '--i': i }}
                     key={i}
                   >
                     <span className="shape">{OPTION_SHAPES[i]}</span>
                     <span>{opt} {correct && '✓'}</span>
                     <div className="bar-track">
-                      <div className="bar" style={{ width: `${(count / max) * 100}%` }} />
+                      <div className="bar" style={{ width: `${(optionCounts[i] / maxOptionCount) * 100}%` }} />
                     </div>
-                    <span className="count">{count}</span>
+                    <span className="count">{optionCounts[i]}</span>
                   </div>
                 )
               })}
             </div>
+          )}
+
+          {currentQuestion.qtype === 'poll' && (
+            <PollChart options={currentQuestion.options || []} counts={optionCounts} />
           )}
 
           {currentQuestion.qtype === 'word_cloud' && <WordCloud texts={cloudTexts} />}

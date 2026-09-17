@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { supabase } from '../supabaseClient'
 import { QUESTION_TYPES, TEAM_COLORS } from '../lib/questionTypes'
+import { MAX_OPTIONS, MIN_OPTIONS, MIN_RANKING_OPTIONS, DEFAULT_OPTIONS } from '../lib/optionStyle'
 import { TIMER_PRESETS } from '../lib/timer'
 import { useI18n } from '../lib/i18n.js'
 
@@ -9,12 +10,26 @@ function blankQuestion(qtype = 'multiple_choice', timeLimit = null) {
   return {
     qtype,
     text: '',
-    options: ['', '', '', ''],
+    options: Array(DEFAULT_OPTIONS).fill(''),
     correct_index: 0,
     explanation: '',
     time_limit: timeLimit,
     meta: {},
   }
+}
+
+// ordering three items is the smallest ranking worth asking for; every other
+// type needs two answers
+function minOptions(qtype) {
+  return qtype === 'ranking' ? MIN_RANKING_OPTIONS : MIN_OPTIONS
+}
+
+// Rows the editor shows: every saved answer, padded out to the default four
+// so there is room to type without adding rows first.
+function optionRows(saved) {
+  const opts = saved || []
+  const rows = Math.max(opts.length, DEFAULT_OPTIONS)
+  return Array.from({ length: rows }, (_, i) => opts[i] || '')
 }
 
 const TYPE_LABEL = Object.fromEntries(QUESTION_TYPES.map((t) => [t.value, t.label]))
@@ -74,18 +89,15 @@ export default function Editor() {
       setTeams(quiz.teams?.length ? quiz.teams : ['', ''])
       setQuestions(
         qs.length
-          ? qs.map((q) => {
-              const opts = q.options || []
-              return {
-                qtype: q.qtype || 'multiple_choice',
-                text: q.text,
-                options: [...opts, '', '', '', ''].slice(0, Math.max(opts.length, 4)),
-                correct_index: q.correct_index ?? 0,
-                explanation: q.explanation || '',
-                time_limit: q.time_limit ?? null,
-                meta: q.meta || {},
-              }
-            })
+          ? qs.map((q) => ({
+              qtype: q.qtype || 'multiple_choice',
+              text: q.text,
+              options: optionRows(q.options),
+              correct_index: q.correct_index ?? 0,
+              explanation: q.explanation || '',
+              time_limit: q.time_limit ?? null,
+              meta: q.meta || {},
+            }))
           : [blankQuestion()]
       )
       setLoading(false)
@@ -103,6 +115,41 @@ export default function Editor() {
       qs.map((q, i) =>
         i === qIndex ? { ...q, options: q.options.map((o, j) => (j === oIndex ? value : o)) } : q
       )
+    )
+  }
+
+  // switching type can raise the floor (ranking needs three items), so top the
+  // rows up rather than leaving the question short of its own minimum
+  function changeType(index, qtype) {
+    setQuestions((qs) =>
+      qs.map((q, i) => {
+        if (i !== index) return q
+        const missing = Math.max(0, minOptions(qtype) - q.options.length)
+        return { ...q, qtype, options: [...q.options, ...Array(missing).fill('')] }
+      })
+    )
+  }
+
+  function addOption(qIndex) {
+    setQuestions((qs) =>
+      qs.map((q, i) =>
+        i === qIndex && q.options.length < MAX_OPTIONS ? { ...q, options: [...q.options, ''] } : q
+      )
+    )
+  }
+
+  function removeOption(qIndex, oIndex) {
+    setQuestions((qs) =>
+      qs.map((q, i) => {
+        if (i !== qIndex || q.options.length <= minOptions(q.qtype)) return q
+        const options = q.options.filter((_, j) => j !== oIndex)
+        // keep the mark on the same answer; if that answer is the one being
+        // removed, fall back to the first
+        let correct = q.correct_index
+        if (oIndex < correct) correct -= 1
+        else if (oIndex === correct) correct = 0
+        return { ...q, options, correct_index: Math.min(correct, options.length - 1) }
+      })
     )
   }
 
@@ -195,6 +242,8 @@ export default function Editor() {
       }
       if (q.qtype === 'poll' && nonEmpty.length < 2) return `${label}: ${t('סקר דורש לפחות שתי אפשרויות.')}`
       if (q.qtype === 'ranking' && nonEmpty.length < 3) return `${label}: ${t('סדר נכון דורש לפחות שלושה פריטים.')}`
+      if (['multiple_choice', 'poll', 'ranking'].includes(q.qtype) && nonEmpty.length > MAX_OPTIONS)
+        return `${label}: ${t('ניתן להגדיר עד {max} אפשרויות לשאלה.', { max: MAX_OPTIONS })}`
       if (q.qtype === 'hotspot') {
         if (!q.meta?.image_url) return `${label}: ${t('יש להעלות תמונה.')}`
         if (q.meta?.x == null || q.meta?.y == null) return `${label}: ${t('יש ללחוץ על התמונה כדי לסמן את הנקודה הנכונה.')}`
@@ -445,7 +494,7 @@ export default function Editor() {
           <div className="question-config">
             <label className="inline-label">
               {t('סוג השאלה:')}
-              <select value={q.qtype} onChange={(e) => updateQuestion(i, { qtype: e.target.value })}>
+              <select value={q.qtype} onChange={(e) => changeType(i, e.target.value)}>
                 {QUESTION_TYPES.map((qt) => (
                   <option key={qt.value} value={qt.value}>{qt.icon} {t(qt.label)}</option>
                 ))}
@@ -513,8 +562,28 @@ export default function Editor() {
                     {q.qtype === 'multiple_choice' && q.correct_index === j && (
                       <span className="correct-label">{t('נכונה')}</span>
                     )}
+                    <button
+                      type="button"
+                      className="option-remove"
+                      title={t(q.qtype === 'poll' ? 'הסרת אפשרות' : 'הסרת מסיח')}
+                      disabled={q.options.length <= minOptions(q.qtype)}
+                      onClick={() => removeOption(i, j)}
+                    >
+                      ✕
+                    </button>
                   </div>
                 ))}
+              </div>
+              <div className="row options-actions">
+                <button
+                  className="btn"
+                  disabled={q.options.length >= MAX_OPTIONS}
+                  title={t('ניתן להגדיר עד {max} אפשרויות לשאלה.', { max: MAX_OPTIONS })}
+                  onClick={() => addOption(i)}
+                >
+                  {t(q.qtype === 'poll' ? '+ הוספת אפשרות' : '+ הוספת מסיח')}
+                </button>
+                <span className="muted small option-count">{q.options.length}/{MAX_OPTIONS}</span>
               </div>
               <p className="muted small">
                 {q.qtype === 'multiple_choice'
@@ -542,8 +611,27 @@ export default function Editor() {
                       placeholder={t(j < 3 ? 'פריט {number}' : 'פריט {number} (רשות)', { number: j + 1 })}
                       onChange={(e) => updateOption(i, j, e.target.value)}
                     />
+                    <button
+                      className="btn ghost danger"
+                      disabled={q.options.length <= minOptions(q.qtype)}
+                      title={t('הסרת פריט')}
+                      onClick={() => removeOption(i, j)}
+                    >
+                      ✕
+                    </button>
                   </div>
                 ))}
+              </div>
+              <div className="row options-actions">
+                <button
+                  className="btn"
+                  disabled={q.options.length >= MAX_OPTIONS}
+                  title={t('ניתן להגדיר עד {max} אפשרויות לשאלה.', { max: MAX_OPTIONS })}
+                  onClick={() => addOption(i)}
+                >
+                  {t('+ הוספת פריט')}
+                </button>
+                <span className="muted small option-count">{q.options.length}/{MAX_OPTIONS}</span>
               </div>
               <p className="muted small">
                 {t('המשתתפים יקבלו את הפריטים בסדר מעורבב ויצטרכו לסדרם. ניקוד חלקי לפי קרבת הסדר לתשובה.')}
