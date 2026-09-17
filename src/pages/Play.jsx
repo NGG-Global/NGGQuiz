@@ -390,7 +390,7 @@ export default function Play() {
               <h2 className="player-question">{currentQuestion.text}</h2>
 
               {(currentQuestion.qtype === 'multiple_choice' || currentQuestion.qtype === 'poll') && (
-                <div className="options-grid player">
+                <div className={`options-grid player${currentQuestion.options.length > 4 ? ' many' : ''}`}>
                   {currentQuestion.options.map((opt, i) => (
                     <button
                       className={`option-tile clickable color-${i}`}
