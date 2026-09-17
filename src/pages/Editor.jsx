@@ -3,15 +3,17 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { supabase } from '../supabaseClient'
 import { QUESTION_TYPES, TEAM_COLORS } from '../lib/questionTypes'
 import { MAX_OPTIONS, MIN_OPTIONS, MIN_RANKING_OPTIONS, DEFAULT_OPTIONS } from '../lib/optionStyle'
+import { TIMER_PRESETS } from '../lib/timer'
 import { useI18n } from '../lib/i18n.js'
 
-function blankQuestion(qtype = 'multiple_choice') {
+function blankQuestion(qtype = 'multiple_choice', timeLimit = null) {
   return {
     qtype,
     text: '',
     options: Array(DEFAULT_OPTIONS).fill(''),
     correct_index: 0,
     explanation: '',
+    time_limit: timeLimit,
     meta: {},
   }
 }
@@ -93,6 +95,7 @@ export default function Editor() {
               options: optionRows(q.options),
               correct_index: q.correct_index ?? 0,
               explanation: q.explanation || '',
+              time_limit: q.time_limit ?? null,
               meta: q.meta || {},
             }))
           : [blankQuestion()]
@@ -165,8 +168,15 @@ export default function Editor() {
   }
 
   function addQuestion() {
-    // a new question inherits the type of the previous question
-    setQuestions((qs) => [...qs, blankQuestion(qs[qs.length - 1]?.qtype || 'multiple_choice')])
+    // a new question inherits the type and the timer of the previous question
+    setQuestions((qs) => {
+      const prev = qs[qs.length - 1]
+      return [...qs, blankQuestion(prev?.qtype || 'multiple_choice', prev?.time_limit ?? null)]
+    })
+  }
+
+  function applyTimerToAll(limit) {
+    setQuestions((qs) => qs.map((q) => ({ ...q, time_limit: limit })))
   }
 
   async function uploadToBucket(bucket, file) {
@@ -263,6 +273,7 @@ export default function Editor() {
     }
 
     let id = quizId
+    let oldQuestionIds = []
     if (isNew) {
       const { data, error } = await supabase.from('quizzes').insert(quizFields).select('id').single()
       if (error) {
@@ -278,7 +289,15 @@ export default function Editor() {
         setSaving(false)
         return
       }
-      await supabase.from('questions').delete().eq('quiz_id', id)
+      // note the existing questions but keep them until the new ones are
+      // safely stored (see below)
+      const { data: existing, error: exErr } = await supabase.from('questions').select('id').eq('quiz_id', id)
+      if (exErr) {
+        setError(t('שמירת החידון נכשלה.'))
+        setSaving(false)
+        return
+      }
+      oldQuestionIds = (existing || []).map((q) => q.id)
     }
 
     const rows = questions.map((q, position) => {
@@ -291,6 +310,7 @@ export default function Editor() {
         correct_index: null,
         meta: null,
         explanation: q.explanation.trim() || null,
+        time_limit: q.time_limit || null,
       }
       if (q.qtype === 'multiple_choice') {
         const kept = []
@@ -312,12 +332,28 @@ export default function Editor() {
       return base // word_cloud
     })
 
-    const { error: insErr } = await supabase.from('questions').insert(rows)
-    setSaving(false)
+    // the new questions are written BEFORE the old ones are removed: if the
+    // write fails the stored quiz stays exactly as it was, instead of being
+    // left without any questions at all
+    const { data: inserted, error: insErr } = await supabase.from('questions').insert(rows).select('id')
     if (insErr) {
-      setError(t('שמירת השאלות נכשלה.'))
+      setError(t('שמירת השאלות נכשלה. החידון השמור לא השתנה.'))
+      setSaving(false)
       return
     }
+
+    if (oldQuestionIds.length) {
+      const { error: delErr } = await supabase.from('questions').delete().in('id', oldQuestionIds)
+      if (delErr) {
+        // undo the insert so the quiz is not left with duplicated questions
+        await supabase.from('questions').delete().in('id', (inserted || []).map((q) => q.id))
+        setError(t('שמירת השאלות נכשלה. החידון השמור לא השתנה.'))
+        setSaving(false)
+        return
+      }
+    }
+
+    setSaving(false)
     navigate('/')
   }
 
@@ -455,14 +491,39 @@ export default function Editor() {
             </div>
           </div>
 
-          <label className="inline-label">
-            {t('סוג השאלה:')}
-            <select value={q.qtype} onChange={(e) => changeType(i, e.target.value)}>
-              {QUESTION_TYPES.map((qt) => (
-                <option key={qt.value} value={qt.value}>{qt.icon} {t(qt.label)}</option>
-              ))}
-            </select>
-          </label>
+          <div className="question-config">
+            <label className="inline-label">
+              {t('סוג השאלה:')}
+              <select value={q.qtype} onChange={(e) => changeType(i, e.target.value)}>
+                {QUESTION_TYPES.map((qt) => (
+                  <option key={qt.value} value={qt.value}>{qt.icon} {t(qt.label)}</option>
+                ))}
+              </select>
+            </label>
+            <label className="inline-label">
+              {t('הגבלת זמן:')}
+              <select
+                value={q.time_limit ?? ''}
+                onChange={(e) => updateQuestion(i, { time_limit: e.target.value ? Number(e.target.value) : null })}
+              >
+                <option value="">{t('ללא הגבלת זמן')}</option>
+                {TIMER_PRESETS.map((sec) => (
+                  <option key={sec} value={sec}>⏱ {t('{seconds} שניות', { seconds: sec })}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <p className="muted small timer-hint">
+            {q.time_limit
+              ? t('⏱ השאלה תיסגר אוטומטית אחרי {seconds} שניות והתשובה תיחשף.', { seconds: q.time_limit })
+              : t('ללא הגבלת זמן - המנחה חושף את התשובה בלחיצה.')}
+            {questions.length > 1 && (
+              <button type="button" className="link-btn" onClick={() => applyTimerToAll(q.time_limit ?? null)}>
+                {t('החלה על כל השאלות')}
+              </button>
+            )}
+          </p>
 
           <label>
             {t('טקסט השאלה')}

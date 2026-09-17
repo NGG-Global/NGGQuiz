@@ -47,7 +47,8 @@ create table if not exists public.questions (
   options jsonb,                   -- mc/poll: answer strings; ranking: items in the CORRECT order
   correct_index int,               -- multiple_choice only
   meta jsonb,                      -- hotspot: {image_url, x, y} in percent coordinates
-  explanation text                 -- optional, shown when the answer is revealed
+  explanation text,                -- optional, shown when the answer is revealed
+  time_limit int                   -- optional timer in seconds; null = no limit
 );
 
 create table if not exists public.game_sessions (
@@ -98,14 +99,25 @@ alter table public.questions add column if not exists qtype text not null defaul
 alter table public.questions add column if not exists meta jsonb;
 alter table public.questions alter column correct_index drop not null;
 alter table public.questions alter column options drop not null;
-alter table public.questions drop column if exists time_limit;
+alter table public.questions add column if not exists time_limit int;
 alter table public.players add column if not exists team text;
 alter table public.answers add column if not exists answer jsonb;
 alter table public.answers alter column answer_index drop not null;
 
+-- keep the timer inside the range the editor offers
+do $$
+begin
+  alter table public.questions
+    add constraint questions_time_limit_range
+    check (time_limit is null or (time_limit >= 5 and time_limit <= 600));
+exception when duplicate_object then null;
+end $$;
+
 -- ------------------------------------------------------------
 -- Scoring: computed on the server so clients cannot tamper.
--- There is no time limit; speed still matters. The speed base is
+-- A question may carry an optional timer (questions.time_limit, in
+-- seconds); once it passes, answers are rejected here as well and not
+-- only in the interface. Speed always matters: the speed base is
 -- 500-1000 points with an exponential decay by response time
 -- (instant -> 1000, ~30s -> ~684, several minutes -> ~500).
 --   multiple_choice: full base when correct, 0 otherwise
@@ -133,7 +145,7 @@ declare
   sim numeric;
   dist numeric;
 begin
-  select qtype, correct_index, options, meta into q from public.questions where id = new.question_id;
+  select qtype, correct_index, options, meta, time_limit into q from public.questions where id = new.question_id;
   select status, question_started_at into s from public.game_sessions where id = new.session_id;
 
   if s.status is distinct from 'question' then
@@ -141,6 +153,13 @@ begin
   end if;
 
   elapsed := greatest(0, extract(epoch from (now() - s.question_started_at)));
+
+  -- a timed question stops accepting answers at its deadline; the 2 second
+  -- grace window keeps an answer sent in time over a slow mobile network
+  if q.time_limit is not null and elapsed > q.time_limit + 2 then
+    raise exception 'the time for this question is up';
+  end if;
+
   base := 500 + 500 * exp(-elapsed / 30.0);
 
   if q.qtype = 'multiple_choice' then

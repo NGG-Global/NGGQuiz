@@ -4,10 +4,12 @@ import QRCode from 'qrcode'
 import { supabase } from '../supabaseClient'
 import { playLink } from '../lib/links'
 import Elapsed from '../components/Elapsed.jsx'
+import Countdown, { useSecondsLeft } from '../components/Countdown.jsx'
 import Confetti from '../components/Confetti.jsx'
 import WordCloud from '../components/WordCloud.jsx'
 import PollChart from '../components/PollChart.jsx'
 import { OPTION_SHAPES } from '../lib/optionStyle'
+import { deadlineMs } from '../lib/timer'
 import { TEAM_COLORS, kendallSimilarity } from '../lib/questionTypes'
 import { useI18n } from '../lib/i18n.js'
 
@@ -31,6 +33,8 @@ export default function Host({ user }) {
   )
   const isHost = session && user && session.host_id === user.id
   const teamsOn = quiz?.teams_enabled && quiz?.teams?.length
+  const timeLimit = (session?.status === 'question' && currentQuestion?.time_limit) || null
+  const timeLeft = useSecondsLeft(session?.question_started_at, timeLimit)
 
   // initial load
   useEffect(() => {
@@ -64,8 +68,25 @@ export default function Host({ user }) {
     return () => { cancelled = true }
   }, [sessionId])
 
-  // realtime subscriptions
+  // realtime subscriptions, plus a resync safety net - realtime events
+  // that arrive while the projector machine is asleep or offline are
+  // never replayed, which would leave the host screen showing a stale
+  // player list and answer count for the rest of the game
   useEffect(() => {
+    let cancelled = false
+
+    async function resync() {
+      const [{ data: s }, { data: ps }, { data: as }] = await Promise.all([
+        supabase.from('game_sessions').select('*').eq('id', sessionId).single(),
+        supabase.from('players').select('*').eq('session_id', sessionId).order('joined_at'),
+        supabase.from('answers').select('*').eq('session_id', sessionId),
+      ])
+      if (cancelled) return
+      if (s) setSession((prev) => (prev && prev.status === s.status && prev.current_index === s.current_index ? prev : s))
+      if (ps) setPlayers(ps)
+      if (as) setAnswers(as)
+    }
+
     const channel = supabase
       .channel(`host-${sessionId}`)
       .on(
@@ -83,8 +104,24 @@ export default function Host({ user }) {
         { event: 'INSERT', schema: 'public', table: 'answers', filter: `session_id=eq.${sessionId}` },
         (payload) => setAnswers((as) => (as.some((a) => a.id === payload.new.id) ? as : [...as, payload.new]))
       )
-      .subscribe()
-    return () => { supabase.removeChannel(channel) }
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') resync()
+      })
+
+    const onWake = () => {
+      if (document.visibilityState === 'visible') resync()
+    }
+    document.addEventListener('visibilitychange', onWake)
+    window.addEventListener('online', onWake)
+    const poll = setInterval(resync, 10000)
+
+    return () => {
+      cancelled = true
+      clearInterval(poll)
+      document.removeEventListener('visibilitychange', onWake)
+      window.removeEventListener('online', onWake)
+      supabase.removeChannel(channel)
+    }
   }, [sessionId])
 
   // refresh scores + answers when the phase changes (scores are updated by a DB trigger)
@@ -116,7 +153,10 @@ export default function Host({ user }) {
     }
     refresh()
     return () => { cancelled = true }
-  }, [session?.status, session?.current_index]) // eslint-disable-line react-hooks/exhaustive-deps
+    // currentQuestion is part of the key: on a host refresh mid-question the
+    // session arrives before the questions, so without it the answers for the
+    // open question are never fetched and the screen shows "answered: 0"
+  }, [session?.status, session?.current_index, currentQuestion?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const currentAnswers = useMemo(
     () => (currentQuestion ? answers.filter((a) => a.question_id === currentQuestion.id) : []),
@@ -150,6 +190,23 @@ export default function Host({ user }) {
       setError(t('רק מנהל המפגש יכול לשלוט בחידון. ודאו שאתם מחוברים לחשבון המתאים.'))
     }
   }
+
+  // A timed question closes itself: at the deadline the host screen
+  // reveals the answer, exactly as if the button had been pressed. The
+  // deadline is enforced in the database as well, so a late answer never
+  // scores even if this timer misses (host screen closed, tab throttled).
+  useEffect(() => {
+    if (!isHost || !timeLimit) return
+    const deadline = deadlineMs(session.question_started_at, timeLimit)
+    if (deadline == null) return
+    const wait = deadline - Date.now()
+    if (wait <= 0) {
+      reveal()
+      return
+    }
+    const timer = setTimeout(reveal, wait)
+    return () => clearTimeout(timer)
+  }, [isHost, timeLimit, session?.question_started_at, currentQuestion?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function startQuestion(index) {
     const { error } = await supabase.rpc('start_question', { p_session: sessionId, p_index: index })
@@ -284,9 +341,14 @@ export default function Host({ user }) {
         <div className="stage-inner" key={`q-${session.current_index}`}>
           <div className="question-meta">
             <span className="meta-pill">{t('שאלה {number} / {total}', { number: session.current_index + 1, total: questions.length })}</span>
-            <Elapsed since={session.question_started_at} />
+            {timeLimit ? <Countdown left={timeLeft ?? timeLimit} /> : <Elapsed since={session.question_started_at} />}
             <span className="meta-pill">{t('ענו: {answered}/{total}', { answered: currentAnswers.length, total: players.length })}</span>
           </div>
+          {timeLimit && (
+            <div className="timer-bar" aria-hidden="true">
+              <div style={{ width: `${((timeLeft ?? timeLimit) / timeLimit) * 100}%` }} />
+            </div>
+          )}
           <h1 className="stage-title">{currentQuestion.text}</h1>
 
           {(currentQuestion.qtype === 'multiple_choice' || currentQuestion.qtype === 'poll') && (

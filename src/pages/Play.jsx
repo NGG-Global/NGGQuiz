@@ -2,9 +2,11 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { supabase } from '../supabaseClient'
 import { OPTION_SHAPES } from '../lib/optionStyle'
+import { deadlineMs } from '../lib/timer'
 import { TEAM_COLORS, teamColor, shuffled } from '../lib/questionTypes'
 import { useI18n } from '../lib/i18n.js'
 import LanguageToggle from '../components/LanguageToggle.jsx'
+import Countdown, { useSecondsLeft } from '../components/Countdown.jsx'
 
 function storageKey(pin) {
   return `nggquiz-player-${pin}`
@@ -25,6 +27,8 @@ export default function Play() {
   const [rankInfo, setRankInfo] = useState(null)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [loadFailed, setLoadFailed] = useState(false)
+  const [reloadToken, setReloadToken] = useState(0)
   const answering = useRef(false)
 
   // per-question input state
@@ -37,13 +41,21 @@ export default function Play() {
     [session, questions]
   )
   const myAnswer = currentQuestion ? myAnswers[currentQuestion.id] : null
+  const timeLimit = (session?.status === 'question' && currentQuestion?.time_limit) || null
+  const timeLeft = useSecondsLeft(session?.question_started_at, timeLimit)
+  const timeUp = timeLimit != null && timeLeft === 0
 
   // restore a previous join after refresh
   useEffect(() => {
     if (!pinParam) return
-    const saved = sessionStorage.getItem(storageKey(pinParam))
-    if (!saved) return
-    const { playerId, sessionId } = JSON.parse(saved)
+    let saved
+    try {
+      saved = JSON.parse(sessionStorage.getItem(storageKey(pinParam)) || 'null')
+    } catch {
+      saved = null // corrupted entry - fall back to the join screen
+    }
+    if (!saved?.playerId || !saved?.sessionId) return
+    const { playerId, sessionId } = saved
     let cancelled = false
     async function restore() {
       const [{ data: s }, { data: p }] = await Promise.all([
@@ -58,24 +70,73 @@ export default function Play() {
     return () => { cancelled = true }
   }, [pinParam])
 
-  // load quiz info + questions once the session is known
+  // load quiz info + questions once the session is known.
+  // This must not fail silently: without the questions the player sees an
+  // empty screen for the rest of the game, so a failed fetch is retried
+  // with backoff and surfaced only if every attempt fails.
   useEffect(() => {
     if (!session?.quiz_id) return
+    const quizId = session.quiz_id
     let cancelled = false
-    Promise.all([
-      supabase.from('quizzes').select('teams_enabled, team_mode, teams, title').eq('id', session.quiz_id).single(),
-      supabase
-        .from('questions')
-        .select('id, qtype, text, options, meta, position, explanation')
-        .eq('quiz_id', session.quiz_id)
-        .order('position'),
-    ]).then(([{ data: qz }, { data: qs }]) => {
+    let timer = null
+
+    async function load(attempt = 0) {
+      const [{ data: qz }, { data: qs }] = await Promise.all([
+        supabase.from('quizzes').select('teams_enabled, team_mode, teams, title').eq('id', quizId).single(),
+        supabase
+          .from('questions')
+          .select('id, qtype, text, options, meta, position, explanation, time_limit')
+          .eq('quiz_id', quizId)
+          .order('position'),
+      ])
       if (cancelled) return
       if (qz) setQuiz(qz)
-      if (qs) setQuestions(qs)
-    })
+      if (qs?.length) {
+        setQuestions(qs)
+        setLoadFailed(false)
+        return
+      }
+      // the request failed, or came back without questions - retry with
+      // backoff, and give the player a retry button once we give up, so
+      // nobody is left staring at an empty screen
+      if (attempt >= 4) {
+        setLoadFailed(true)
+        return
+      }
+      timer = setTimeout(() => load(attempt + 1), 1000 * 2 ** attempt)
+    }
+
+    load()
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
+  }, [session?.quiz_id, reloadToken])
+
+  // restore my answers for this session (a refresh mid-game would
+  // otherwise let the player answer again - which the unique constraint
+  // rejects - and show "no answer received" on the reveal screen)
+  useEffect(() => {
+    if (!session?.id || !player?.id) return
+    let cancelled = false
+    supabase
+      .from('answers')
+      .select('question_id, is_correct, points, answer_index, answer')
+      .eq('session_id', session.id)
+      .eq('player_id', player.id)
+      .then(({ data }) => {
+        if (cancelled || !data?.length) return
+        setMyAnswers((m) => {
+          const next = { ...m }
+          data.forEach((a) => {
+            // never overwrite a locally known result with a stale row
+            if (!next[a.question_id] || next[a.question_id].pending) next[a.question_id] = a
+          })
+          return next
+        })
+      })
     return () => { cancelled = true }
-  }, [session?.quiz_id])
+  }, [session?.id, player?.id])
 
   // follow the session state in realtime, with a resync safety net:
   // realtime updates are lost while the phone is locked, the tab is in
@@ -177,7 +238,14 @@ export default function Play() {
       .eq('pin', cleanPin)
       .neq('status', 'finished')
       .maybeSingle()
-    if (sErr || !s) {
+    if (sErr) {
+      // a failed request is not a wrong PIN - saying so sends the player
+      // hunting for a code that was correct all along
+      setError(t('אין כרגע חיבור לשרת. בדקו את החיבור לאינטרנט ונסו שוב.'))
+      setBusy(false)
+      return
+    }
+    if (!s) {
       setError(t('לא נמצא חידון פעיל עם הקוד הזה.'))
       setBusy(false)
       return
@@ -236,6 +304,10 @@ export default function Play() {
 
   async function submitAnswer(payload) {
     if (!currentQuestion || myAnswer || answering.current) return
+    // a timed question stops accepting answers at its deadline (the
+    // database enforces the same deadline, with a small grace window)
+    const deadline = deadlineMs(session.question_started_at, currentQuestion.time_limit)
+    if (deadline != null && Date.now() >= deadline) return
     answering.current = true
     setError('')
     const questionId = currentQuestion.id
@@ -270,7 +342,8 @@ export default function Play() {
           .eq('id', session.id)
           .single()
         if (s) setSession(s)
-        if (!s || (s.status === 'question' && s.current_index === session.current_index)) {
+        const missedDeadline = deadline != null && Date.now() >= deadline
+        if (!missedDeadline && (!s || (s.status === 'question' && s.current_index === session.current_index))) {
           setError(t('שליחת התשובה נכשלה. בדקו את החיבור ונסו שוב.'))
         }
       }
@@ -374,16 +447,46 @@ export default function Play() {
         </div>
       )}
 
+      {session.status === 'question' && !currentQuestion && (
+        // the question is open but its content has not arrived on this
+        // device yet - show progress (and a way out) instead of a blank screen
+        <div className="stage-inner">
+          {loadFailed ? (
+            <>
+              <h1 className="stage-title">{t('לא הצלחנו לטעון את השאלה 😕')}</h1>
+              <p className="stage-subtitle">{t('בדקו את החיבור לאינטרנט ונסו שוב.')}</p>
+              <button
+                className="btn light xl"
+                onClick={() => { setLoadFailed(false); setReloadToken((n) => n + 1) }}
+              >
+                {t('טעינה מחדש')}
+              </button>
+            </>
+          ) : (
+            <>
+              <div className="spinner" />
+              <p className="stage-subtitle">{t('טוען את השאלה...')}</p>
+            </>
+          )}
+        </div>
+      )}
+
       {session.status === 'question' && currentQuestion && (
         <div className="stage-inner full" key={`q-${session.current_index}`}>
           <div className="question-meta">
             <span className="meta-pill">{t('שאלה {number}', { number: session.current_index + 1 })}</span>
+            {timeLimit && !myAnswer && <Countdown left={timeLeft ?? timeLimit} />}
           </div>
           {error && <div className="error-box">{error}</div>}
           {myAnswer ? (
             <div className="wait-note">
               <h1 className="stage-title">{t('התשובה נקלטה ✓')}</h1>
               <p className="stage-subtitle">{t('ממתינים לשאר המשתתפים...')}</p>
+            </div>
+          ) : timeUp ? (
+            <div className="wait-note">
+              <h1 className="stage-title">{t('הזמן נגמר ⏱')}</h1>
+              <p className="stage-subtitle">{t('ממתינים לחשיפת התשובה...')}</p>
             </div>
           ) : (
             <>
