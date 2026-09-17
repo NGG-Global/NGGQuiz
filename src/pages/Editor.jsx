@@ -79,7 +79,7 @@ export default function Editor() {
               return {
                 qtype: q.qtype || 'multiple_choice',
                 text: q.text,
-                options: [...opts, '', '', ''].slice(0, Math.max(opts.length, 2, 4)),
+                options: [...opts, '', '', '', ''].slice(0, Math.max(opts.length, 4)),
                 correct_index: q.correct_index ?? 0,
                 explanation: q.explanation || '',
                 time_limit: q.time_limit ?? null,
@@ -224,6 +224,7 @@ export default function Editor() {
     }
 
     let id = quizId
+    let oldQuestionIds = []
     if (isNew) {
       const { data, error } = await supabase.from('quizzes').insert(quizFields).select('id').single()
       if (error) {
@@ -239,7 +240,15 @@ export default function Editor() {
         setSaving(false)
         return
       }
-      await supabase.from('questions').delete().eq('quiz_id', id)
+      // note the existing questions but keep them until the new ones are
+      // safely stored (see below)
+      const { data: existing, error: exErr } = await supabase.from('questions').select('id').eq('quiz_id', id)
+      if (exErr) {
+        setError(t('שמירת החידון נכשלה.'))
+        setSaving(false)
+        return
+      }
+      oldQuestionIds = (existing || []).map((q) => q.id)
     }
 
     const rows = questions.map((q, position) => {
@@ -274,12 +283,28 @@ export default function Editor() {
       return base // word_cloud
     })
 
-    const { error: insErr } = await supabase.from('questions').insert(rows)
-    setSaving(false)
+    // the new questions are written BEFORE the old ones are removed: if the
+    // write fails the stored quiz stays exactly as it was, instead of being
+    // left without any questions at all
+    const { data: inserted, error: insErr } = await supabase.from('questions').insert(rows).select('id')
     if (insErr) {
-      setError(t('שמירת השאלות נכשלה.'))
+      setError(t('שמירת השאלות נכשלה. החידון השמור לא השתנה.'))
+      setSaving(false)
       return
     }
+
+    if (oldQuestionIds.length) {
+      const { error: delErr } = await supabase.from('questions').delete().in('id', oldQuestionIds)
+      if (delErr) {
+        // undo the insert so the quiz is not left with duplicated questions
+        await supabase.from('questions').delete().in('id', (inserted || []).map((q) => q.id))
+        setError(t('שמירת השאלות נכשלה. החידון השמור לא השתנה.'))
+        setSaving(false)
+        return
+      }
+    }
+
+    setSaving(false)
     navigate('/')
   }
 
