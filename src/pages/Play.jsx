@@ -7,6 +7,7 @@ import { TEAM_COLORS, teamColor, shuffled } from '../lib/questionTypes'
 import { useI18n } from '../lib/i18n.js'
 import LanguageToggle from '../components/LanguageToggle.jsx'
 import Countdown, { useSecondsLeft } from '../components/Countdown.jsx'
+import Scale from '../components/Scale.jsx'
 
 function storageKey(pin) {
   return `nggquiz-player-${pin}`
@@ -41,6 +42,7 @@ export default function Play() {
     [session, questions]
   )
   const myAnswer = currentQuestion ? myAnswers[currentQuestion.id] : null
+  const survey = quiz?.kind === 'survey'
   const timeLimit = (session?.status === 'question' && currentQuestion?.time_limit) || null
   const timeLeft = useSecondsLeft(session?.question_started_at, timeLimit)
   const timeUp = timeLimit != null && timeLeft === 0
@@ -82,7 +84,7 @@ export default function Play() {
 
     async function load(attempt = 0) {
       const [{ data: qz }, { data: qs }] = await Promise.all([
-        supabase.from('quizzes').select('teams_enabled, team_mode, teams, title').eq('id', quizId).single(),
+        supabase.from('quizzes').select('kind, teams_enabled, team_mode, teams, title').eq('id', quizId).single(),
         supabase
           .from('questions')
           .select('id, qtype, text, options, meta, position, explanation, time_limit')
@@ -253,7 +255,7 @@ export default function Play() {
 
     const { data: qz } = await supabase
       .from('quizzes')
-      .select('teams_enabled, team_mode, teams, title')
+      .select('kind, teams_enabled, team_mode, teams, title')
       .eq('id', s.quiz_id)
       .single()
 
@@ -434,7 +436,7 @@ export default function Play() {
             {player.team}
           </span>
         )}
-        {rankInfo && <span className="chip">{t("{score} נק'", { score: rankInfo.score })}</span>}
+        {!survey && rankInfo && <span className="chip">{t("{score} נק'", { score: rankInfo.score })}</span>}
       </div>
 
       {session.status === 'lobby' && (
@@ -508,6 +510,15 @@ export default function Play() {
                 </div>
               )}
 
+              {currentQuestion.qtype === 'scale' && (
+                <div className="scale-play">
+                  <Scale
+                    meta={currentQuestion.meta}
+                    onPick={(value) => submitAnswer({ answer_index: value })}
+                  />
+                </div>
+              )}
+
               {currentQuestion.qtype === 'word_cloud' && (
                 <form
                   className="cloud-form"
@@ -578,7 +589,7 @@ export default function Play() {
 
       {session.status === 'reveal' && (
         <div className="stage-inner" key={`r-${session.current_index}`}>
-          {currentQuestion && ['poll', 'word_cloud'].includes(currentQuestion.qtype) ? (
+          {currentQuestion && ['poll', 'word_cloud', 'scale'].includes(currentQuestion.qtype) ? (
             <>
               <h1 className="stage-title">{!myAnswer || myAnswer.pending ? t('לא נקלטה תשובה הפעם') : t('תודה על השיתוף! 🙌')}</h1>
               <p className="stage-subtitle">{t('התוצאות מוצגות על המסך המוקרן.')}</p>
@@ -603,13 +614,20 @@ export default function Play() {
           {currentQuestion?.explanation && (
             <div className="explain-box">💡 {currentQuestion.explanation}</div>
           )}
-          {rankInfo && currentQuestion && !['poll', 'word_cloud'].includes(currentQuestion.qtype) && (
+          {!survey && rankInfo && currentQuestion && !['poll', 'word_cloud', 'scale'].includes(currentQuestion.qtype) && (
             <p className="stage-subtitle">{t('מקום {rank} מתוך {total}', { rank: rankInfo.rank, total: rankInfo.total })}</p>
           )}
         </div>
       )}
 
-      {session.status === 'leaderboard' && (
+      {session.status === 'leaderboard' && survey && (
+        <div className="stage-inner" key={`l-${session.current_index}`}>
+          <h1 className="stage-title">{t('תודה על השיתוף! 🙌')}</h1>
+          <p className="stage-subtitle">{t('התוצאות מוצגות על המסך המוקרן.')}</p>
+        </div>
+      )}
+
+      {session.status === 'leaderboard' && !survey && (
         <div className="stage-inner" key={`l-${session.current_index}`}>
           <h1 className="stage-title">{t('המצב שלך')}</h1>
           {rankInfo && (
@@ -621,7 +639,14 @@ export default function Play() {
         </div>
       )}
 
-      {session.status === 'finished' && (
+      {session.status === 'finished' && survey && (
+        <div className="stage-inner">
+          <h1 className="stage-title">{t('תודה על השיתוף! 🙌')}</h1>
+          <p className="stage-subtitle">{t('סיכום הסקר מוצג על המסך המוקרן.')}</p>
+        </div>
+      )}
+
+      {session.status === 'finished' && !survey && (
         <div className="stage-inner">
           <h1 className="stage-title">{t('זהו, נגמר! 🏁')}</h1>
           {rankInfo && (

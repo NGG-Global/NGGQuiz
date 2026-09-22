@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../supabaseClient'
 import { useI18n } from '../lib/i18n.js'
@@ -25,6 +25,8 @@ export default function Library({ user }) {
   const [error, setError] = useState('')
   const [startingId, setStartingId] = useState(null)
   const [duplicatingId, setDuplicatingId] = useState(null)
+  const [createOpen, setCreateOpen] = useState(false)
+  const createMenu = useRef(null)
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -33,7 +35,7 @@ export default function Library({ user }) {
       const [{ data: qz, error: qErr }, { data: fs, error: fErr }] = await Promise.all([
         supabase
           .from('quizzes')
-          .select('id, owner_id, folder_id, title, subtitle, logo_url, updated_at, questions(count)')
+          .select('id, owner_id, folder_id, kind, title, subtitle, logo_url, updated_at, questions(count)')
           .order('updated_at', { ascending: false }),
         supabase.from('folders').select('*').order('name'),
       ])
@@ -113,17 +115,37 @@ export default function Library({ user }) {
     setFolders((fs) => fs.map((f) => (f.id === folder.id ? { ...f, color } : f)))
   }
 
+  // the create menu closes on a press outside it, or on Escape
+  useEffect(() => {
+    if (!createOpen) return
+    const onPress = (e) => {
+      if (!createMenu.current?.contains(e.target)) setCreateOpen(false)
+    }
+    const onKey = (e) => {
+      if (e.key === 'Escape') setCreateOpen(false)
+    }
+    document.addEventListener('mousedown', onPress)
+    document.addEventListener('touchstart', onPress)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onPress)
+      document.removeEventListener('touchstart', onPress)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [createOpen])
+
   async function duplicateQuiz(quiz) {
     setError('')
     setDuplicatingId(quiz.id)
     const { data: src } = await supabase
       .from('quizzes')
-      .select('teams_enabled, team_mode, teams')
+      .select('kind, teams_enabled, team_mode, teams')
       .eq('id', quiz.id)
       .single()
     const { data: newQuiz, error } = await supabase
       .from('quizzes')
       .insert({
+        kind: src?.kind ?? quiz.kind ?? 'quiz',
         title: `${quiz.title} (עותק)`,
         subtitle: quiz.subtitle,
         logo_url: quiz.logo_url,
@@ -132,7 +154,7 @@ export default function Library({ user }) {
         team_mode: src?.team_mode ?? 'manual',
         teams: src?.teams ?? null,
       })
-      .select('id, owner_id, folder_id, title, subtitle, logo_url, updated_at')
+      .select('id, owner_id, folder_id, kind, title, subtitle, logo_url, updated_at')
       .single()
     if (error) {
       setError(t('שכפול החידון נכשל.'))
@@ -203,9 +225,34 @@ export default function Library({ user }) {
 
       <div className="page-head">
         <h2>{t('ספריית החידונים')}</h2>
-        <button className="btn primary" onClick={() => navigate('/edit/new')}>
-          {t('+ חידון חדש')}
-        </button>
+        <div className="create-menu" ref={createMenu}>
+          <button
+            className="btn primary"
+            aria-haspopup="menu"
+            aria-expanded={createOpen}
+            onClick={() => setCreateOpen((open) => !open)}
+          >
+            {t('+ יצירה חדשה')} <span className="caret">▾</span>
+          </button>
+          {createOpen && (
+            <div className="create-menu-list" role="menu">
+              <button role="menuitem" onClick={() => navigate('/edit/new')}>
+                <span className="create-menu-icon">🎯</span>
+                <span>
+                  <strong>{t('חידון')}</strong>
+                  <span className="muted small">{t('תשובות נכונות, ניקוד ופודיום')}</span>
+                </span>
+              </button>
+              <button role="menuitem" onClick={() => navigate('/edit/new?kind=survey')}>
+                <span className="create-menu-icon">📋</span>
+                <span>
+                  <strong>{t('סקר')}</strong>
+                  <span className="muted small">{t('ללא ניקוד; מסתיים בסיכום נתונים')}</span>
+                </span>
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="folder-bar">
@@ -305,7 +352,10 @@ export default function Library({ user }) {
             return (
               <div className="card quiz-card" key={quiz.id}>
                 {quiz.logo_url && <img className="quiz-logo-thumb" src={quiz.logo_url} alt={t('לוגו הלקוח')} />}
-                <h3>{quiz.title}</h3>
+                <h3>
+                  {quiz.kind === 'survey' && <span className="kind-badge">📋 {t('סקר')}</span>}
+                  {quiz.title}
+                </h3>
                 {quiz.subtitle && <p className="muted">{quiz.subtitle}</p>}
                 <p className="muted small">
                   {t('{count} שאלות', { count })}

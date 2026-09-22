@@ -8,6 +8,10 @@ import Countdown, { useSecondsLeft } from '../components/Countdown.jsx'
 import Confetti from '../components/Confetti.jsx'
 import WordCloud from '../components/WordCloud.jsx'
 import PollChart from '../components/PollChart.jsx'
+import Scale from '../components/Scale.jsx'
+import SurveyConclusion from '../components/SurveyConclusion.jsx'
+import { scaleCounts, scalePoints } from '../lib/survey'
+import { scaleSummary } from '../lib/stats'
 import { OPTION_SHAPES } from '../lib/optionStyle'
 import { deadlineMs } from '../lib/timer'
 import { TEAM_COLORS, kendallSimilarity } from '../lib/questionTypes'
@@ -32,7 +36,8 @@ export default function Host({ user }) {
     [session, questions]
   )
   const isHost = session && user && session.host_id === user.id
-  const teamsOn = quiz?.teams_enabled && quiz?.teams?.length
+  const survey = quiz?.kind === 'survey'
+  const teamsOn = !survey && quiz?.teams_enabled && quiz?.teams?.length
   const timeLimit = (session?.status === 'question' && currentQuestion?.time_limit) || null
   const timeLeft = useSecondsLeft(session?.question_started_at, timeLimit)
 
@@ -137,6 +142,10 @@ export default function Host({ user }) {
           .order('score', { ascending: false })
         if (!cancelled && data) setPlayers(data)
       }
+      if (session.status === 'finished') {
+        const { data } = await supabase.from('answers').select('*').eq('session_id', sessionId)
+        if (!cancelled && data) setAnswers(data)
+      }
       if (['question', 'reveal'].includes(session.status) && currentQuestion) {
         const { data } = await supabase
           .from('answers')
@@ -234,6 +243,13 @@ export default function Host({ user }) {
   )
   const maxOptionCount = Math.max(1, ...optionCounts)
 
+  const scale = currentQuestion?.qtype === 'scale' ? currentQuestion.meta : null
+  const scalePointList = scale ? scalePoints(scale) : []
+  const scaleTally = scale ? scaleCounts(currentAnswers, scale) : []
+  const scaleStats = scale
+    ? scaleSummary(scaleTally, scalePointList[0], scalePointList[scalePointList.length - 1])
+    : null
+
   const rankingAvgAccuracy = (() => {
     if (currentQuestion?.qtype !== 'ranking') return null
     const sims = currentAnswers
@@ -248,12 +264,14 @@ export default function Host({ user }) {
     if (!isHost) return null
     return (
       <div className="row center-row">
-        <button className="btn light xl" onClick={() => setStatus('leaderboard')}>
-          {t('טבלת המובילים')}
-        </button>
+        {!survey && (
+          <button className="btn light xl" onClick={() => setStatus('leaderboard')}>
+            {t('טבלת המובילים')}
+          </button>
+        )}
         {isLast ? (
           <button className="btn primary xl" onClick={() => setStatus('finished')}>
-            {t('לתוצאות הסופיות')}
+            {survey ? t('לסיכום הסקר') : t('לתוצאות הסופיות')}
           </button>
         ) : (
           <button className="btn primary xl" onClick={() => startQuestion(session.current_index + 1)}>
@@ -362,6 +380,13 @@ export default function Host({ user }) {
             </div>
           )}
 
+          {currentQuestion.qtype === 'scale' && (
+            <>
+              <p className="stage-subtitle">{t('📏 בחרו את המספר שמייצג אתכם במכשיר שלכם')}</p>
+              <Scale meta={currentQuestion.meta} />
+            </>
+          )}
+
           {currentQuestion.qtype === 'word_cloud' && (
             <>
               <p className="stage-subtitle">{t('☁️ ענו מהטלפון - הענן נבנה בזמן אמת')}</p>
@@ -393,7 +418,7 @@ export default function Host({ user }) {
 
           {isHost && (
             <button className="btn light xl" onClick={reveal}>
-              {t('חשיפת התשובה')}
+              {survey ? t('הצגת התוצאות') : t('חשיפת התשובה')}
             </button>
           )}
         </div>
@@ -426,7 +451,30 @@ export default function Host({ user }) {
           )}
 
           {currentQuestion.qtype === 'poll' && (
-            <PollChart options={currentQuestion.options || []} counts={optionCounts} />
+            <PollChart
+              options={currentQuestion.options || []}
+              counts={optionCounts}
+              reference={!survey}
+            />
+          )}
+
+          {currentQuestion.qtype === 'scale' && (
+            <>
+              <PollChart options={scalePointList.map(String)} counts={scaleTally} scale />
+              <div className="survey-scale-ends muted small">
+                <span>{currentQuestion.meta?.low_label}</span>
+                <span>{currentQuestion.meta?.high_label}</span>
+              </div>
+              {scaleStats && (
+                <div className="survey-metrics compact">
+                  <div className="metric"><span>{scaleStats.mean.toFixed(2)}</span><small>{t('ממוצע')}</small></div>
+                  <div className="metric"><span>{scaleStats.median}</span><small>{t('חציון')}</small></div>
+                  <div className="metric"><span>{scaleStats.modes.join(', ')}</span><small>{t('השכיח')}</small></div>
+                  <div className="metric"><span>{scaleStats.sd.toFixed(2)}</span><small>{t('סטיית תקן')}</small></div>
+                  <div className="metric"><span>{scaleStats.n}</span><small>{t('עונים')}</small></div>
+                </div>
+              )}
+            </>
           )}
 
           {currentQuestion.qtype === 'word_cloud' && <WordCloud texts={cloudTexts} />}
@@ -501,7 +549,19 @@ export default function Host({ user }) {
         </div>
       )}
 
-      {session.status === 'finished' && (
+      {session.status === 'finished' && survey && (
+        <div className="stage-inner wide" key="finished-survey">
+          {quiz.logo_url && <img className="client-logo small" src={quiz.logo_url} alt={t('לוגו הלקוח')} />}
+          <h1 className="stage-title">📋 {quiz.title}</h1>
+          <h2 className="stage-subtitle">{t('סיכום הסקר')}</h2>
+          <SurveyConclusion questions={questions} answers={answers} participants={players.length} />
+          {isHost && (
+            <button className="btn ghost light-ghost" onClick={() => navigate('/')}>{t('חזרה לספרייה')}</button>
+          )}
+        </div>
+      )}
+
+      {session.status === 'finished' && !survey && (
         <div className="stage-inner" key="finished">
           <Confetti />
           {quiz.logo_url && <img className="client-logo small" src={quiz.logo_url} alt={t('לוגו הלקוח')} />}
