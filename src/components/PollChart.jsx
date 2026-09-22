@@ -9,10 +9,20 @@ const TOP_PAD = 4
 // fitted to the same answers. Both share a single axis, so the gap between
 // them is the real gap between the room's answers and a normal distribution;
 // neither is rescaled to make the other look better.
-export default function PollChart({ options, counts }) {
+//
+// With `scale` the bars are the points of a scale question rather than
+// written options: they share one accent colour instead of the per-option
+// colours and shapes, since the points are an ordered run, not a set of
+// separate choices.
+//
+// `reference` turns the curve off. A normal distribution only means
+// something across answers that have an order, so a survey's choice
+// questions - where the options are just different answers, in no
+// particular order - are drawn without it.
+export default function PollChart({ options, counts, scale = false, reference: withReference = true }) {
   const { t } = useI18n()
   const total = counts.reduce((sum, c) => sum + c, 0)
-  const reference = normalReference(counts)
+  const reference = withReference ? normalReference(counts) : null
   const top = Math.max(1, ...counts, reference?.peak ?? 0)
 
   // share of the plot height, as a percentage, for a given answer count
@@ -48,7 +58,10 @@ export default function PollChart({ options, counts }) {
                   <strong>{total ? Math.round((count / total) * 100) : 0}%</strong>
                   <span className="poll-count">{count}</span>
                 </span>
-                <div className={`poll-bar color-${i}`} style={{ height: `${plotHeight(count)}%` }} />
+                <div
+                  className={`poll-bar ${scale ? 'scale' : `color-${i}`}`}
+                  style={{ height: `${plotHeight(count)}%` }}
+                />
               </div>
             )
           })}
@@ -65,8 +78,8 @@ export default function PollChart({ options, counts }) {
       <div className="poll-labels">
         {options.map((opt, i) => (
           <div className="poll-label" style={{ '--i': i }} key={i}>
-            <span className={`poll-shape color-${i}`}>{OPTION_SHAPES[i]}</span>
-            <span className="poll-text">{opt}</span>
+            {!scale && <span className={`poll-shape color-${i}`}>{OPTION_SHAPES[i]}</span>}
+            <span className={scale ? 'poll-text scale-value' : 'poll-text'}>{opt}</span>
           </div>
         ))}
       </div>

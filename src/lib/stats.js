@@ -52,3 +52,60 @@ export function normalReference(counts, samples = 72) {
   })
   return { ...stats, points, peak }
 }
+
+// ---------- survey statistics ----------
+//
+// A scale question's answers are the points participants chose, so unlike
+// the option indices above they carry real numeric meaning and the whole
+// summary is reported: mean, median, the most frequent answer, spread and
+// the count behind them.
+//
+// Reading a mean off an agreement scale treats ordered labels as if the
+// distance between them were equal, which is convention rather than fact -
+// which is why the median and the mode are shown beside it, and why the
+// distribution itself is always on screen.
+
+// counts[i] is how many participants chose the value min + i.
+export function scaleSummary(counts, min, max) {
+  const n = counts.reduce((sum, c) => sum + c, 0)
+  if (!n) return null
+
+  const value = (i) => min + i
+  const mean = counts.reduce((sum, c, i) => sum + c * value(i), 0) / n
+  const variance = counts.reduce((sum, c, i) => sum + c * (value(i) - mean) ** 2, 0) / n
+
+  // the value of the k-th answer (0-based) once they are lined up in order
+  const at = (k) => {
+    let seen = 0
+    for (let i = 0; i < counts.length; i++) {
+      seen += counts[i]
+      if (seen > k) return value(i)
+    }
+    return value(counts.length - 1)
+  }
+  // with an even number of answers the median sits between the middle two
+  const median = (at(Math.floor((n - 1) / 2)) + at(Math.ceil((n - 1) / 2))) / 2
+
+  const top = Math.max(...counts)
+  const modes = counts.map((c, i) => (c === top ? value(i) : null)).filter((v) => v !== null)
+
+  return {
+    n,
+    mean,
+    median,
+    modes,
+    sd: Math.sqrt(variance),
+    // position on the scale as a 0-100 index, so questions that run on
+    // different scales can still be compared and combined
+    index: ((mean - min) / (max - min)) * 100,
+  }
+}
+
+// One headline number for a survey: the average of each scale question's
+// 0-100 index. Questions count equally, whatever their scale or how many
+// people answered them.
+export function overallIndex(summaries) {
+  const scored = summaries.filter(Boolean)
+  if (!scored.length) return null
+  return scored.reduce((sum, s) => sum + s.index, 0) / scored.length
+}

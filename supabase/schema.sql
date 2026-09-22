@@ -26,6 +26,8 @@ create table if not exists public.quizzes (
   id uuid primary key default gen_random_uuid(),
   owner_id uuid not null default auth.uid() references auth.users(id),
   folder_id uuid references public.folders(id) on delete set null,
+  kind text not null default 'quiz'
+    check (kind in ('quiz', 'survey')),   -- a survey is unscored and ends in aggregate statistics
   title text not null,
   subtitle text,
   logo_url text,                   -- client logo shown on the opening screen
@@ -42,11 +44,12 @@ create table if not exists public.questions (
   quiz_id uuid not null references public.quizzes(id) on delete cascade,
   position int not null,
   qtype text not null default 'multiple_choice'
-    check (qtype in ('multiple_choice', 'poll', 'word_cloud', 'ranking', 'hotspot')),
+    check (qtype in ('multiple_choice', 'poll', 'word_cloud', 'ranking', 'hotspot', 'scale')),
   text text not null,
   options jsonb,                   -- mc/poll: answer strings; ranking: items in the CORRECT order
   correct_index int,               -- multiple_choice only
-  meta jsonb,                      -- hotspot: {image_url, x, y} in percent coordinates
+  meta jsonb,                      -- hotspot: {image_url, x, y} in percent coordinates;
+                                   -- scale: {min, max, low_label, high_label}
   explanation text,                -- optional, shown when the answer is revealed
   time_limit int                   -- optional timer in seconds; null = no limit
 );
@@ -78,7 +81,8 @@ create table if not exists public.answers (
   session_id uuid not null references public.game_sessions(id) on delete cascade,
   question_id uuid not null references public.questions(id) on delete cascade,
   player_id uuid not null references public.players(id) on delete cascade,
-  answer_index int,                -- multiple_choice / poll
+  answer_index int,                -- multiple_choice / poll: the chosen option;
+                                   -- scale: the chosen value itself (min..max)
   answer jsonb,                    -- word_cloud: {text}; ranking: {order}; hotspot: {x, y}
   is_correct boolean not null default false,
   points int not null default 0,
@@ -100,6 +104,7 @@ alter table public.questions add column if not exists meta jsonb;
 alter table public.questions alter column correct_index drop not null;
 alter table public.questions alter column options drop not null;
 alter table public.questions add column if not exists time_limit int;
+alter table public.quizzes add column if not exists kind text not null default 'quiz';
 alter table public.players add column if not exists team text;
 alter table public.answers add column if not exists answer jsonb;
 alter table public.answers alter column answer_index drop not null;
@@ -112,6 +117,21 @@ begin
     check (time_limit is null or (time_limit >= 5 and time_limit <= 600));
 exception when duplicate_object then null;
 end $$;
+
+do $$
+begin
+  alter table public.quizzes
+    add constraint quizzes_kind_check check (kind in ('quiz', 'survey'));
+exception when duplicate_object then null;
+end $$;
+
+-- the question types grew with the scale question, so the constraint is
+-- replaced rather than added: a database created before surveys still
+-- carries the older list
+alter table public.questions drop constraint if exists questions_qtype_check;
+alter table public.questions
+  add constraint questions_qtype_check
+  check (qtype in ('multiple_choice', 'poll', 'word_cloud', 'ranking', 'hotspot', 'scale'));
 
 -- ------------------------------------------------------------
 -- Scoring: computed on the server so clients cannot tamper.
@@ -197,6 +217,17 @@ begin
     sim := greatest(0, least(1, (40 - dist) / 35.0));
     new.is_correct := sim >= 0.5;
     new.points := round(base * sim);
+
+  elsif q.qtype = 'scale' then
+    -- unscored like a poll, but the value has to be a point on the scale:
+    -- anything else would quietly skew the survey's statistics
+    if new.answer_index is null
+       or new.answer_index < (q.meta ->> 'min')::int
+       or new.answer_index > (q.meta ->> 'max')::int then
+      raise exception 'answer is outside the scale';
+    end if;
+    new.is_correct := false;
+    new.points := 0;
 
   else
     -- poll / word_cloud: no right answer, no points

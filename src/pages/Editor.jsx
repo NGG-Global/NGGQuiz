@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { supabase } from '../supabaseClient'
 import { QUESTION_TYPES, TEAM_COLORS } from '../lib/questionTypes'
 import { MAX_OPTIONS, MIN_OPTIONS, MIN_RANKING_OPTIONS, DEFAULT_OPTIONS } from '../lib/optionStyle'
 import { TIMER_PRESETS } from '../lib/timer'
+import { SURVEY_TYPES, SCALE_PRESETS, DEFAULT_SCALE, scalePoints } from '../lib/survey'
 import { useI18n } from '../lib/i18n.js'
 
 function blankQuestion(qtype = 'multiple_choice', timeLimit = null) {
@@ -14,7 +15,7 @@ function blankQuestion(qtype = 'multiple_choice', timeLimit = null) {
     correct_index: 0,
     explanation: '',
     time_limit: timeLimit,
-    meta: {},
+    meta: qtype === 'scale' ? { ...DEFAULT_SCALE } : {},
   }
 }
 
@@ -32,13 +33,22 @@ function optionRows(saved) {
   return Array.from({ length: rows }, (_, i) => opts[i] || '')
 }
 
-const TYPE_LABEL = Object.fromEntries(QUESTION_TYPES.map((t) => [t.value, t.label]))
+const TYPE_LABEL = Object.fromEntries(
+  [...QUESTION_TYPES, ...SURVEY_TYPES].map((t) => [t.value, t.label])
+)
 
 export default function Editor() {
   const { t } = useI18n()
   const { quizId } = useParams()
   const isNew = quizId === 'new'
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+
+  // a survey is created from the library's menu (/edit/new?kind=survey);
+  // an existing one carries its kind on the row
+  const [kind, setKind] = useState(isNew && searchParams.get('kind') === 'survey' ? 'survey' : 'quiz')
+  const survey = kind === 'survey'
+  const questionTypes = survey ? SURVEY_TYPES : QUESTION_TYPES
 
   const [title, setTitle] = useState('')
   const [subtitle, setSubtitle] = useState('')
@@ -48,7 +58,9 @@ export default function Editor() {
   const [teamsEnabled, setTeamsEnabled] = useState(false)
   const [teamMode, setTeamMode] = useState('manual')
   const [teams, setTeams] = useState(['', ''])
-  const [questions, setQuestions] = useState([blankQuestion()])
+  const [questions, setQuestions] = useState(() =>
+    [blankQuestion(isNew && searchParams.get('kind') === 'survey' ? 'scale' : 'multiple_choice')]
+  )
   const [loading, setLoading] = useState(!isNew)
   const [saving, setSaving] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -80,6 +92,7 @@ export default function Editor() {
         setLoading(false)
         return
       }
+      setKind(quiz.kind || 'quiz')
       setTitle(quiz.title)
       setSubtitle(quiz.subtitle || '')
       setLogoUrl(quiz.logo_url || '')
@@ -125,7 +138,8 @@ export default function Editor() {
       qs.map((q, i) => {
         if (i !== index) return q
         const missing = Math.max(0, minOptions(qtype) - q.options.length)
-        return { ...q, qtype, options: [...q.options, ...Array(missing).fill('')] }
+        const meta = qtype === 'scale' ? { ...DEFAULT_SCALE, ...q.meta } : q.meta
+        return { ...q, qtype, meta, options: [...q.options, ...Array(missing).fill('')] }
       })
     )
   }
@@ -171,7 +185,8 @@ export default function Editor() {
     // a new question inherits the type and the timer of the previous question
     setQuestions((qs) => {
       const prev = qs[qs.length - 1]
-      return [...qs, blankQuestion(prev?.qtype || 'multiple_choice', prev?.time_limit ?? null)]
+      const fallback = survey ? 'scale' : 'multiple_choice'
+      return [...qs, blankQuestion(prev?.qtype || fallback, prev?.time_limit ?? null)]
     })
   }
 
@@ -244,6 +259,11 @@ export default function Editor() {
       if (q.qtype === 'ranking' && nonEmpty.length < 3) return `${label}: ${t('סדר נכון דורש לפחות שלושה פריטים.')}`
       if (['multiple_choice', 'poll', 'ranking'].includes(q.qtype) && nonEmpty.length > MAX_OPTIONS)
         return `${label}: ${t('ניתן להגדיר עד {max} אפשרויות לשאלה.', { max: MAX_OPTIONS })}`
+      if (q.qtype === 'scale') {
+        if (scalePoints(q.meta).length < 2) return `${label}: ${t('יש לבחור טווח לסולם.')}`
+        if (!(q.meta?.low_label || '').trim() || !(q.meta?.high_label || '').trim())
+          return `${label}: ${t('יש לתת שם לשני קצות הסולם (למשל 1=לא מסכים, 5=מסכים).')}`
+      }
       if (q.qtype === 'hotspot') {
         if (!q.meta?.image_url) return `${label}: ${t('יש להעלות תמונה.')}`
         if (q.meta?.x == null || q.meta?.y == null) return `${label}: ${t('יש ללחוץ על התמונה כדי לסמן את הנקודה הנכונה.')}`
@@ -263,6 +283,7 @@ export default function Editor() {
 
     const cleanTeams = teams.map((t) => t.trim()).filter(Boolean)
     const quizFields = {
+      kind,
       title: title.trim(),
       subtitle: subtitle.trim() || null,
       logo_url: logoUrl || null,
@@ -326,6 +347,17 @@ export default function Editor() {
       if (q.qtype === 'poll' || q.qtype === 'ranking') {
         return { ...base, options: q.options.map((o) => o.trim()).filter(Boolean) }
       }
+      if (q.qtype === 'scale') {
+        return {
+          ...base,
+          meta: {
+            min: Number(q.meta?.min ?? DEFAULT_SCALE.min),
+            max: Number(q.meta?.max ?? DEFAULT_SCALE.max),
+            low_label: (q.meta?.low_label || '').trim(),
+            high_label: (q.meta?.high_label || '').trim(),
+          },
+        }
+      }
       if (q.qtype === 'hotspot') {
         return { ...base, meta: { image_url: q.meta.image_url, x: q.meta.x, y: q.meta.y } }
       }
@@ -369,7 +401,11 @@ export default function Editor() {
       </header>
 
       <div className="page-head">
-        <h2>{isNew ? t('חידון חדש') : t('עריכת חידון')}</h2>
+        <h2>
+          {survey
+            ? (isNew ? t('סקר חדש') : t('עריכת סקר'))
+            : (isNew ? t('חידון חדש') : t('עריכת חידון'))}
+        </h2>
         <button className="btn primary" onClick={save} disabled={saving}>
           {saving ? t('שומר...') : t('שמירה בספרייה')}
         </button>
@@ -426,6 +462,7 @@ export default function Editor() {
         </div>
       </div>
 
+      {!survey && (
       <div className="card teams-card">
         <div className="row space-between">
           <div>
@@ -479,6 +516,7 @@ export default function Editor() {
           </div>
         )}
       </div>
+      )}
 
       {questions.map((q, i) => (
         <div className="card question-card" key={i}>
@@ -495,7 +533,7 @@ export default function Editor() {
             <label className="inline-label">
               {t('סוג השאלה:')}
               <select value={q.qtype} onChange={(e) => changeType(i, e.target.value)}>
-                {QUESTION_TYPES.map((qt) => (
+                {questionTypes.map((qt) => (
                   <option key={qt.value} value={qt.value}>{qt.icon} {t(qt.label)}</option>
                 ))}
               </select>
@@ -593,6 +631,64 @@ export default function Editor() {
             </>
           )}
 
+          {q.qtype === 'scale' && (() => {
+            const points = scalePoints(q.meta)
+            const low = points[0]
+            const high = points[points.length - 1]
+            return (
+              <div className="scale-edit">
+                <label className="inline-label">
+                  {t('טווח הסולם:')}
+                  <select
+                    value={`${low}-${high}`}
+                    onChange={(e) => {
+                      const [min, max] = e.target.value.split('-').map(Number)
+                      updateQuestion(i, { meta: { ...q.meta, min, max } })
+                    }}
+                  >
+                    {SCALE_PRESETS.map((preset) => (
+                      <option key={`${preset.min}-${preset.max}`} value={`${preset.min}-${preset.max}`}>
+                        {preset.min} – {preset.max}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <div className="scale-ends">
+                  <label>
+                    {t('הקצה הנמוך ({value}=)', { value: low })}
+                    <input
+                      value={q.meta?.low_label || ''}
+                      maxLength={30}
+                      placeholder={t('לדוגמה: לא מסכים')}
+                      onChange={(e) => updateQuestion(i, { meta: { ...q.meta, low_label: e.target.value } })}
+                    />
+                  </label>
+                  <label>
+                    {t('הקצה הגבוה ({value}=)', { value: high })}
+                    <input
+                      value={q.meta?.high_label || ''}
+                      maxLength={30}
+                      placeholder={t('לדוגמה: מסכים')}
+                      onChange={(e) => updateQuestion(i, { meta: { ...q.meta, high_label: e.target.value } })}
+                    />
+                  </label>
+                </div>
+
+                <span className="field-title">{t('כך זה ייראה למשתתפים:')}</span>
+                <div className="scale-preview">
+                  {points.map((point) => (
+                    <span className="scale-point" key={point}>{point}</span>
+                  ))}
+                </div>
+                <div className="scale-preview-ends muted small">
+                  <span>{q.meta?.low_label || t('לדוגמה: לא מסכים')}</span>
+                  <span>{q.meta?.high_label || t('לדוגמה: מסכים')}</span>
+                </div>
+              </div>
+            )
+          })()}
+
           {q.qtype === 'word_cloud' && (
             <p className="muted small type-hint">
               {t('☁️ המשתתפים יקלידו תשובה חופשית קצרה, והמסך המוקרן יבנה ענן מילים חי. אין תשובה נכונה ואין ניקוד.')}
@@ -670,6 +766,7 @@ export default function Editor() {
             </div>
           )}
 
+          {!survey && (
           <label>
             {t('הסבר לתשובה (רשות - יוצג בעת חשיפת התשובה)')}
             <textarea
@@ -679,6 +776,7 @@ export default function Editor() {
               placeholder={t('לדוגמה: התשובה נכונה מפני ש...')}
             />
           </label>
+          )}
         </div>
       ))}
 

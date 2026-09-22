@@ -476,6 +476,120 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--p
   .options-edit { grid-template-columns: 1fr; }
 }
 
+/* ---------- create menu + survey editing ---------- */
+
+.create-menu { position: relative; }
+.create-menu .caret { font-size: 0.8em; opacity: 0.85; margin-inline-start: 4px; }
+.create-menu-list {
+  position: absolute; inset-inline-end: 0; top: calc(100% + 8px); z-index: 20;
+  min-width: 260px; padding: 6px;
+  background: var(--card); border: 1px solid #e3e5ef; border-radius: 14px;
+  box-shadow: 0 14px 40px rgba(30, 20, 70, 0.18);
+  animation: popIn 0.16s ease both;
+}
+.create-menu-list button {
+  display: flex; align-items: flex-start; gap: 10px; width: 100%;
+  font: inherit; text-align: start; cursor: pointer;
+  background: transparent; border: none; border-radius: 10px; padding: 10px 12px;
+  transition: background 0.12s;
+}
+.create-menu-list button:hover { background: #f3f0fb; }
+.create-menu-list button span { display: flex; flex-direction: column; gap: 2px; }
+.create-menu-icon { font-size: 1.4rem; line-height: 1.2; }
+.kind-badge {
+  display: inline-block; margin-inline-end: 8px; vertical-align: middle;
+  background: #ece7fa; color: var(--primary);
+  border-radius: 999px; padding: 2px 10px; font-size: 0.75rem; font-weight: 800;
+}
+
+.scale-edit { display: flex; flex-direction: column; gap: 10px; }
+.scale-ends { display: flex; flex-wrap: wrap; gap: 14px; }
+.scale-ends label { flex: 1 1 220px; margin: 0; }
+.scale-preview { display: flex; flex-wrap: wrap; gap: 8px; }
+.scale-point {
+  min-width: 42px; padding: 8px 0; text-align: center;
+  border-radius: 10px; background: #f2f0fa; color: var(--primary);
+  font-weight: 800; font-variant-numeric: tabular-nums;
+}
+.scale-preview-ends { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+
+/* ---------- the scale a participant answers on ---------- */
+
+.scale-strip { width: 100%; max-width: 720px; display: flex; flex-direction: column; gap: 10px; }
+.scale-row { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+.scale-point-btn {
+  flex: 1 1 52px; min-width: 52px; max-width: 96px;
+  display: flex; align-items: center; justify-content: center;
+  aspect-ratio: 1 / 1; border: none; border-radius: 16px;
+  background: rgba(255, 255, 255, 0.16); color: #fff;
+  font: inherit; font-size: clamp(1.1rem, 2.6vw, 1.8rem); font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
+  backdrop-filter: blur(4px);
+  animation: popIn 0.35s ease both; animation-delay: calc(var(--i, 0) * 60ms);
+  transition: transform 0.12s, background 0.15s;
+}
+button.scale-point-btn { cursor: pointer; }
+button.scale-point-btn:hover { background: rgba(255, 255, 255, 0.3); transform: translateY(-3px); }
+button.scale-point-btn:active { transform: scale(0.94); }
+.scale-point-btn.chosen { background: #fff; color: var(--primary); }
+.scale-ends-row {
+  display: flex; justify-content: space-between; gap: 14px;
+  font-weight: 700; opacity: 0.85; font-size: clamp(0.85rem, 2vw, 1.15rem);
+}
+.scale-play { width: 100%; display: flex; justify-content: center; margin-top: 8vh; }
+
+/* ---------- survey conclusion ---------- */
+
+.stage-inner.wide { max-width: 1200px; }
+
+.survey-conclusion { width: 100%; display: flex; flex-direction: column; gap: 18px; }
+.survey-headline {
+  display: flex; flex-wrap: wrap; gap: 14px; justify-content: center;
+}
+.survey-stat {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  min-width: 128px; padding: 14px 22px; border-radius: 16px;
+  background: rgba(255, 255, 255, 0.12); border: 1px solid rgba(255, 255, 255, 0.18);
+  backdrop-filter: blur(4px);
+  animation: popIn 0.45s ease both; animation-delay: calc(var(--i, 0) * 80ms);
+}
+.survey-stat.big { background: rgba(255, 255, 255, 0.22); min-width: 180px; }
+.survey-stat-value { font-size: clamp(1.8rem, 4vw, 3rem); font-weight: 900; font-variant-numeric: tabular-nums; }
+.survey-stat.big .survey-stat-value { font-size: clamp(2.4rem, 6vw, 4rem); }
+.survey-stat-label { font-size: 0.9rem; opacity: 0.8; font-weight: 700; }
+.survey-note { max-width: 760px; margin: 0 auto; opacity: 0.7; }
+
+.survey-questions { display: flex; flex-direction: column; gap: 16px; }
+.survey-question {
+  background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 18px; padding: 18px 20px;
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  animation: fadeUp 0.5s ease both; animation-delay: calc(var(--i, 0) * 120ms);
+}
+.survey-question-title {
+  display: flex; align-items: center; gap: 10px; margin: 0;
+  font-size: clamp(1rem, 2.2vw, 1.5rem); text-align: start;
+}
+.survey-question-num {
+  flex: none; width: 32px; height: 32px; border-radius: 50%;
+  background: rgba(255, 255, 255, 0.22);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 0.95rem; font-weight: 800;
+}
+.survey-metrics { display: flex; flex-wrap: wrap; gap: 10px 26px; justify-content: center; }
+.survey-metrics.compact { gap: 8px 22px; }
+.survey-metrics .metric { display: flex; flex-direction: column; align-items: center; }
+.survey-metrics .metric span {
+  font-size: clamp(1.1rem, 2.4vw, 1.7rem); font-weight: 900; font-variant-numeric: tabular-nums;
+}
+.survey-metrics .metric.wide span { font-variant-numeric: normal; }
+.survey-metrics .metric small { font-size: 0.78rem; opacity: 0.75; font-weight: 700; }
+.survey-scale-ends {
+  display: flex; justify-content: space-between; gap: 14px;
+  width: 100%; max-width: 900px; font-weight: 700;
+}
+
 /* ---------- survey results chart ---------- */
 
 .poll-chart { width: 100%; max-width: 900px; margin-top: 4px; --poll-label-space: 2.8rem; }
@@ -519,6 +633,8 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--p
 .poll-bar.color-4 { background: linear-gradient(180deg, #b57bf5, var(--c-purple)); }
 .poll-bar.color-5 { background: linear-gradient(180deg, #2dd4bf, var(--c-teal)); }
 .poll-bar.color-6 { background: linear-gradient(180deg, #ff9a3c, var(--c-orange)); }
+.poll-bar.scale { background: linear-gradient(180deg, #a78bfa, #6d3bd4); }
+.poll-text.scale-value { font-size: 1.15em; font-variant-numeric: tabular-nums; }
 
 /* the reference curve is stretched over the same plot area as the bars, so
    option i always sits at the centre of its column; RTL flips the columns,
