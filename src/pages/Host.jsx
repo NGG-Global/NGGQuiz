@@ -10,12 +10,13 @@ import WordCloud from '../components/WordCloud.jsx'
 import PollChart from '../components/PollChart.jsx'
 import Scale from '../components/Scale.jsx'
 import SurveyConclusion from '../components/SurveyConclusion.jsx'
+import Explanation from '../components/Explanation.jsx'
 import { scaleCounts, scalePoints } from '../lib/survey'
-import { scaleSummary } from '../lib/stats'
+import { scaleSummary, correctShare } from '../lib/stats'
 import { OPTION_SHAPES, optionColor, optionLabel } from '../lib/optionStyle'
 import { deadlineMs } from '../lib/timer'
 import { TEAM_COLORS, kendallSimilarity, hasCorrectOption } from '../lib/questionTypes'
-import { quizFlags } from '../lib/quizMode'
+import { quizFlags, LIVE_BAR_TYPES, ANSWER_SLIDE_TYPES } from '../lib/quizMode'
 import { useI18n } from '../lib/i18n.js'
 
 export default function Host({ user }) {
@@ -37,7 +38,7 @@ export default function Host({ user }) {
     [session, questions]
   )
   const isHost = session && user && session.host_id === user.id
-  const { survey, scored, anonymous } = quizFlags(quiz)
+  const { survey, scored, anonymous, live } = quizFlags(quiz)
   // teams compete on points, so they need a scored quiz (the database holds
   // the same rule; this also covers a row written before it existed)
   const teamsOn = scored && quiz?.teams_enabled && quiz?.teams?.length
@@ -245,6 +246,17 @@ export default function Host({ user }) {
     (_, i) => currentAnswers.filter((a) => a.answer_index === i).length
   )
   const maxOptionCount = Math.max(1, ...optionCounts)
+  const optionLabels = (currentQuestion?.options || []).map((_, i) => optionLabel(currentQuestion, i, t))
+  const optionColors = (currentQuestion?.options || []).map((_, i) => optionColor(currentQuestion, i))
+
+  // live mode: the projector shows results rising while the question is open
+  // (never which answer is right), and reveals with a single answer slide
+  const liveBars = live && LIVE_BAR_TYPES.includes(currentQuestion?.qtype)
+  const answerSlide = live && ANSWER_SLIDE_TYPES.includes(currentQuestion?.qtype)
+  const share = answerSlide ? correctShare(optionCounts, currentQuestion.correct_index) : null
+  const answerText = answerSlide ? optionLabel(currentQuestion, currentQuestion.correct_index, t) : ''
+  // a long answer steps down in size so the slide still fits on one screen
+  const answerLength = answerText.length > 28 ? ' longer' : answerText.length > 12 ? ' long' : ''
 
   const scale = currentQuestion?.qtype === 'scale' ? currentQuestion.meta : null
   const scalePointList = scale ? scalePoints(scale) : []
@@ -267,14 +279,14 @@ export default function Host({ user }) {
     if (!isHost) return null
     return (
       <div className="row center-row">
-        {!survey && (
+        {scored && (
           <button className="btn light xl" onClick={() => setStatus('leaderboard')}>
             {t('טבלת המובילים')}
           </button>
         )}
         {isLast ? (
           <button className="btn primary xl" onClick={() => setStatus('finished')}>
-            {survey ? t('לסיכום הסקר') : t('לתוצאות הסופיות')}
+            {survey ? t('לסיכום הסקר') : live ? t('לסיכום החידון') : t('לתוצאות הסופיות')}
           </button>
         ) : (
           <button className="btn primary xl" onClick={() => startQuestion(session.current_index + 1)}>
@@ -305,7 +317,7 @@ export default function Host({ user }) {
   }
 
   return (
-    <div className="stage">
+    <div className={`stage${live ? ' live' : ''}`}>
       {error && <div className="error-box floating">{error}</div>}
 
       {session.status === 'lobby' && (
@@ -313,21 +325,33 @@ export default function Host({ user }) {
           {quiz.logo_url && <img className="client-logo" src={quiz.logo_url} alt={t('לוגו הלקוח')} />}
           <h1 className="stage-title">{quiz.title}</h1>
           {quiz.subtitle && <h2 className="stage-subtitle">{quiz.subtitle}</h2>}
-          <div className="pin-banner big glow">
-            {t('קוד הצטרפות:')} <span className="pin">{session.pin}</span>
-          </div>
-          <p className="join-url" dir="ltr">{playLink(session.pin)}</p>
-          {qr && <img className="qr-big" src={qr} alt={t('קוד QR להצטרפות')} />}
           {anonymous ? (
-            // no names in anonymous mode: one count the whole room can read
-            <div className="join-counter" aria-live="polite">
-              <span className="join-counter-value" key={players.length}>{players.length}</span>
-              <span className="join-counter-label">
-                {players.length === 1 ? t('משתתף הצטרף') : t('משתתפים הצטרפו')}
-              </span>
+            // no names in anonymous mode: the join code and the QR side by
+            // side, and one count the whole room can read
+            <div className="lobby-join">
+              <div className="lobby-join-info">
+                <div className="pin-banner big glow">
+                  {t('קוד הצטרפות:')} <span className="pin">{session.pin}</span>
+                </div>
+                <p className="join-url" dir="ltr">{playLink(session.pin)}</p>
+                <div className="join-counter">
+                  <span className="join-counter-value" key={players.length}>{players.length}</span>
+                  <span className="join-counter-label">
+                    {players.length === 1 ? t('משתתף הצטרף') : t('משתתפים הצטרפו')}
+                  </span>
+                </div>
+              </div>
+              {qr && <img className="qr-big" src={qr} alt={t('קוד QR להצטרפות')} />}
             </div>
           ) : (
-            <h3>{t('משתתפים ({count})', { count: players.length })}</h3>
+            <>
+              <div className="pin-banner big glow">
+                {t('קוד הצטרפות:')} <span className="pin">{session.pin}</span>
+              </div>
+              <p className="join-url" dir="ltr">{playLink(session.pin)}</p>
+              {qr && <img className="qr-big" src={qr} alt={t('קוד QR להצטרפות')} />}
+              <h3>{t('משתתפים ({count})', { count: players.length })}</h3>
+            </>
           )}
           {anonymous ? null : teamsOn ? (
             <div className="team-lobby">
@@ -382,7 +406,18 @@ export default function Host({ user }) {
           )}
           <h1 className="stage-title">{currentQuestion.text}</h1>
 
-          {(hasCorrectOption(currentQuestion.qtype) || currentQuestion.qtype === 'poll') && (
+          {liveBars ? (
+            // the chart stays mounted for the whole question, so each answer
+            // eases the bars up instead of redrawing them; no correctIndex,
+            // and colours by position only, so nothing hints at the answer
+            <PollChart
+              live
+              options={optionLabels}
+              counts={optionCounts}
+              colorIndexes={optionColors}
+              reference={false}
+            />
+          ) : (hasCorrectOption(currentQuestion.qtype) || currentQuestion.qtype === 'poll') && (
             <div className={`options-grid${currentQuestion.options.length > 4 ? ' many' : ''}`}>
               {currentQuestion.options.map((_, i) => (
                 <div className={`option-tile color-${optionColor(currentQuestion, i)}`} style={{ '--i': i }} key={i}>
@@ -437,7 +472,46 @@ export default function Host({ user }) {
         </div>
       )}
 
-      {session.status === 'reveal' && currentQuestion && (
+      {session.status === 'reveal' && currentQuestion && answerSlide && (
+        <div className="stage-inner wide answer-slide" key={`r-${session.current_index}`}>
+          <p className="answer-question">{currentQuestion.text}</p>
+          <div className="answer-panel">
+            <span className="answer-label">{t('התשובה הנכונה')}</span>
+            <span className={`answer-text${answerLength}`}>{answerText}</span>
+          </div>
+          <div
+            className={`answer-body${currentQuestion.explanation ? ' with-explanation' : ''}${currentQuestion.options.length > 4 ? ' many' : ''}`}
+          >
+            {currentQuestion.explanation && (
+              <div className="answer-explanation">
+                <Explanation text={currentQuestion.explanation} />
+              </div>
+            )}
+            <div className="answer-results">
+              {share ? (
+                <div className="answer-stat">
+                  <span className="answer-stat-value">{t('{percent}% ענו נכון', { percent: share.percent })}</span>
+                  <span className="answer-stat-detail">
+                    {t('{correct} מתוך {total} משתתפים', { correct: share.correct, total: share.total })}
+                  </span>
+                </div>
+              ) : (
+                <p className="answer-stat-detail">{t('לא התקבלו תשובות לשאלה זו.')}</p>
+              )}
+              <PollChart
+                options={optionLabels}
+                counts={optionCounts}
+                correctIndex={currentQuestion.correct_index}
+                colorIndexes={optionColors}
+                reference={false}
+              />
+            </div>
+          </div>
+          {nextButtons()}
+        </div>
+      )}
+
+      {session.status === 'reveal' && currentQuestion && !answerSlide && (
         <div className="stage-inner" key={`r-${session.current_index}`}>
           <h1 className="stage-title">{currentQuestion.text}</h1>
 

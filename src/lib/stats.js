@@ -109,3 +109,23 @@ export function overallIndex(summaries) {
   if (!scored.length) return null
   return scored.reduce((sum, s) => sum + s.index, 0) / scored.length
 }
+
+// ---------- live mode ----------
+
+// The share of answers that picked the correct option. Null when nobody
+// answered, since 0% would claim that everyone got it wrong.
+export function correctShare(counts, correctIndex) {
+  const total = counts.reduce((sum, c) => sum + c, 0)
+  if (!total || correctIndex == null) return null
+  const correct = counts[correctIndex] || 0
+  return { correct, total, rate: correct / total, percent: Math.round((correct / total) * 100) }
+}
+
+// The average correct rate across questions: each question counts equally,
+// however many people answered it, and a question nobody answered is left
+// out rather than counted as 0%.
+export function averageRate(shares) {
+  const rated = shares.filter(Boolean)
+  if (!rated.length) return null
+  return rated.reduce((sum, s) => sum + s.rate, 0) / rated.length
+}

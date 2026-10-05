@@ -9,6 +9,7 @@ import { useI18n } from '../lib/i18n.js'
 import LanguageToggle from '../components/LanguageToggle.jsx'
 import Countdown, { useSecondsLeft } from '../components/Countdown.jsx'
 import Scale from '../components/Scale.jsx'
+import Explanation from '../components/Explanation.jsx'
 
 function storageKey(pin) {
   return `nggquiz-player-${pin}`
@@ -240,9 +241,11 @@ export default function Play() {
     }
   }, [currentQuestion?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // pull my rank when scores are shown
+  // pull my rank when scores are shown. Not in an unscored quiz: there is no
+  // rank to show, and with hundreds of phones this query would run on every
+  // one of them at every reveal
   useEffect(() => {
-    if (!session || !player) return
+    if (!session || !player || !quiz || !scored) return
     if (!['leaderboard', 'finished', 'reveal'].includes(session.status)) return
     let cancelled = false
     supabase
@@ -256,7 +259,7 @@ export default function Play() {
         if (idx >= 0) setRankInfo({ rank: idx + 1, total: data.length, score: data[idx].score })
       })
     return () => { cancelled = true }
-  }, [session?.status, session?.id, player]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [session?.status, session?.id, player, quiz, scored]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // the open session behind a PIN, and its quiz
   async function lookupJoin(cleanPin) {
@@ -716,9 +719,9 @@ export default function Play() {
               <h1 className="stage-title correct-text">
                 {hasCorrectOption(currentQuestion?.qtype) ? t('נכון! 🎉') : t('מדויק! 🎯')}
               </h1>
-              <p className="points-pop">{t('+{points} נקודות', { points: myAnswer.points })}</p>
+              {scored && <p className="points-pop">{t('+{points} נקודות', { points: myAnswer.points })}</p>}
             </>
-          ) : myAnswer.points > 0 ? (
+          ) : scored && myAnswer.points > 0 ? (
             <>
               <h1 className="stage-title correct-text">{t('כמעט! 👏')}</h1>
               <p className="points-pop">{t('+{points} נקודות', { points: myAnswer.points })}</p>
@@ -727,22 +730,24 @@ export default function Play() {
             <h1 className="stage-title wrong-text">{t('לא נכון הפעם 💪')}</h1>
           )}
           {currentQuestion?.explanation && (
-            <div className="explain-box">💡 {currentQuestion.explanation}</div>
+            <div className="explain-box"><Explanation text={currentQuestion.explanation} lead="💡" /></div>
           )}
-          {!survey && rankInfo && currentQuestion && !['poll', 'word_cloud', 'scale'].includes(currentQuestion.qtype) && (
+          {scored && rankInfo && currentQuestion && !['poll', 'word_cloud', 'scale'].includes(currentQuestion.qtype) && (
             <p className="stage-subtitle">{t('מקום {rank} מתוך {total}', { rank: rankInfo.rank, total: rankInfo.total })}</p>
           )}
         </div>
       )}
 
-      {session.status === 'leaderboard' && survey && (
+      {/* an unscored quiz never opens the leaderboard; if it ever did, the
+          phone thanks the player instead of showing a rank it does not have */}
+      {session.status === 'leaderboard' && !scored && (
         <div className="stage-inner" key={`l-${session.current_index}`}>
           <h1 className="stage-title">{t('תודה על השיתוף! 🙌')}</h1>
           <p className="stage-subtitle">{t('התוצאות מוצגות על המסך המוקרן.')}</p>
         </div>
       )}
 
-      {session.status === 'leaderboard' && !survey && (
+      {session.status === 'leaderboard' && scored && (
         <div className="stage-inner" key={`l-${session.current_index}`}>
           <h1 className="stage-title">{t('המצב שלך')}</h1>
           {rankInfo && (
@@ -761,7 +766,14 @@ export default function Play() {
         </div>
       )}
 
-      {session.status === 'finished' && !survey && (
+      {session.status === 'finished' && !scored && !survey && (
+        <div className="stage-inner">
+          <h1 className="stage-title">{t('תודה על השיתוף! 🙌')}</h1>
+          <p className="stage-subtitle">{t('התוצאות מוצגות על המסך המוקרן.')}</p>
+        </div>
+      )}
+
+      {session.status === 'finished' && scored && (
         <div className="stage-inner">
           <h1 className="stage-title">{t('זהו, נגמר! 🏁')}</h1>
           {rankInfo && (
