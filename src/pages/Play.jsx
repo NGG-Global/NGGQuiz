@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { supabase } from '../supabaseClient'
-import { OPTION_SHAPES } from '../lib/optionStyle'
+import { OPTION_SHAPES, optionColor, optionLabel } from '../lib/optionStyle'
 import { deadlineMs } from '../lib/timer'
-import { TEAM_COLORS, teamColor, shuffled } from '../lib/questionTypes'
+import { TEAM_COLORS, teamColor, shuffled, hasCorrectOption } from '../lib/questionTypes'
 import { useI18n } from '../lib/i18n.js'
 import LanguageToggle from '../components/LanguageToggle.jsx'
 import Countdown, { useSecondsLeft } from '../components/Countdown.jsx'
@@ -494,17 +494,19 @@ export default function Play() {
             <>
               <h2 className="player-question">{currentQuestion.text}</h2>
 
-              {(currentQuestion.qtype === 'multiple_choice' || currentQuestion.qtype === 'poll') && (
-                <div className={`options-grid player${currentQuestion.options.length > 4 ? ' many' : ''}`}>
-                  {currentQuestion.options.map((opt, i) => (
+              {(hasCorrectOption(currentQuestion.qtype) || currentQuestion.qtype === 'poll') && (
+                <div
+                  className={`options-grid player${currentQuestion.qtype === 'true_false' ? ' true-false' : ''}${currentQuestion.options.length > 4 ? ' many' : ''}`}
+                >
+                  {currentQuestion.options.map((_, i) => (
                     <button
-                      className={`option-tile clickable color-${i}`}
+                      className={`option-tile clickable color-${optionColor(currentQuestion, i)}`}
                       style={{ '--i': i }}
                       key={i}
                       onClick={() => submitAnswer({ answer_index: i })}
                     >
-                      <span className="shape">{OPTION_SHAPES[i]}</span>
-                      <span>{opt}</span>
+                      <span className="shape">{OPTION_SHAPES[optionColor(currentQuestion, i)]}</span>
+                      <span>{optionLabel(currentQuestion, i, t)}</span>
                     </button>
                   ))}
                 </div>
@@ -599,7 +601,7 @@ export default function Play() {
           ) : myAnswer.is_correct ? (
             <>
               <h1 className="stage-title correct-text">
-                {currentQuestion?.qtype === 'multiple_choice' ? t('נכון! 🎉') : t('מדויק! 🎯')}
+                {hasCorrectOption(currentQuestion?.qtype) ? t('נכון! 🎉') : t('מדויק! 🎯')}
               </h1>
               <p className="points-pop">{t('+{points} נקודות', { points: myAnswer.points })}</p>
             </>

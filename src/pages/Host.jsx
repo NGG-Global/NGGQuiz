@@ -12,9 +12,9 @@ import Scale from '../components/Scale.jsx'
 import SurveyConclusion from '../components/SurveyConclusion.jsx'
 import { scaleCounts, scalePoints } from '../lib/survey'
 import { scaleSummary } from '../lib/stats'
-import { OPTION_SHAPES } from '../lib/optionStyle'
+import { OPTION_SHAPES, optionColor, optionLabel } from '../lib/optionStyle'
 import { deadlineMs } from '../lib/timer'
-import { TEAM_COLORS, kendallSimilarity } from '../lib/questionTypes'
+import { TEAM_COLORS, kendallSimilarity, hasCorrectOption } from '../lib/questionTypes'
 import { useI18n } from '../lib/i18n.js'
 
 export default function Host({ user }) {
@@ -369,12 +369,12 @@ export default function Host({ user }) {
           )}
           <h1 className="stage-title">{currentQuestion.text}</h1>
 
-          {(currentQuestion.qtype === 'multiple_choice' || currentQuestion.qtype === 'poll') && (
+          {(hasCorrectOption(currentQuestion.qtype) || currentQuestion.qtype === 'poll') && (
             <div className={`options-grid${currentQuestion.options.length > 4 ? ' many' : ''}`}>
-              {currentQuestion.options.map((opt, i) => (
-                <div className={`option-tile color-${i}`} style={{ '--i': i }} key={i}>
-                  <span className="shape">{OPTION_SHAPES[i]}</span>
-                  <span>{opt}</span>
+              {currentQuestion.options.map((_, i) => (
+                <div className={`option-tile color-${optionColor(currentQuestion, i)}`} style={{ '--i': i }} key={i}>
+                  <span className="shape">{OPTION_SHAPES[optionColor(currentQuestion, i)]}</span>
+                  <span>{optionLabel(currentQuestion, i, t)}</span>
                 </div>
               ))}
             </div>
@@ -428,18 +428,18 @@ export default function Host({ user }) {
         <div className="stage-inner" key={`r-${session.current_index}`}>
           <h1 className="stage-title">{currentQuestion.text}</h1>
 
-          {currentQuestion.qtype === 'multiple_choice' && (
+          {hasCorrectOption(currentQuestion.qtype) && (
             <div className={`options-grid${currentQuestion.options.length > 4 ? ' many' : ''}`}>
-              {currentQuestion.options.map((opt, i) => {
+              {currentQuestion.options.map((_, i) => {
                 const correct = i === currentQuestion.correct_index
                 return (
                   <div
-                    className={`option-tile color-${i} ${correct ? 'correct' : 'dimmed'}`}
+                    className={`option-tile color-${optionColor(currentQuestion, i)} ${correct ? 'correct' : 'dimmed'}`}
                     style={{ '--i': i }}
                     key={i}
                   >
-                    <span className="shape">{OPTION_SHAPES[i]}</span>
-                    <span>{opt} {correct && '✓'}</span>
+                    <span className="shape">{OPTION_SHAPES[optionColor(currentQuestion, i)]}</span>
+                    <span>{optionLabel(currentQuestion, i, t)} {correct && '✓'}</span>
                     <div className="bar-track">
                       <div className="bar" style={{ width: `${(optionCounts[i] / maxOptionCount) * 100}%` }} />
                     </div>

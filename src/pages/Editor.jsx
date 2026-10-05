@@ -1,18 +1,21 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { supabase } from '../supabaseClient'
-import { QUESTION_TYPES, TEAM_COLORS } from '../lib/questionTypes'
-import { MAX_OPTIONS, MIN_OPTIONS, MIN_RANKING_OPTIONS, DEFAULT_OPTIONS } from '../lib/optionStyle'
+import { QUESTION_TYPES, TEAM_COLORS, TRUE_FALSE_OPTIONS } from '../lib/questionTypes'
+import { MAX_OPTIONS, MIN_OPTIONS, MIN_RANKING_OPTIONS, DEFAULT_OPTIONS, optionColor } from '../lib/optionStyle'
 import { TIMER_PRESETS } from '../lib/timer'
 import { SURVEY_TYPES, SCALE_PRESETS, DEFAULT_SCALE, scalePoints } from '../lib/survey'
 import { useI18n } from '../lib/i18n.js'
 
 function blankQuestion(qtype = 'multiple_choice', timeLimit = null) {
+  const trueFalse = qtype === 'true_false'
   return {
     qtype,
     text: '',
-    options: Array(DEFAULT_OPTIONS).fill(''),
-    correct_index: 0,
+    options: trueFalse ? [...TRUE_FALSE_OPTIONS] : Array(DEFAULT_OPTIONS).fill(''),
+    // a true/false question starts unmarked, so its answer is always one the
+    // author chose rather than a default nobody noticed
+    correct_index: trueFalse ? null : 0,
     explanation: '',
     time_limit: timeLimit,
     meta: qtype === 'scale' ? { ...DEFAULT_SCALE } : {},
@@ -105,8 +108,8 @@ export default function Editor() {
           ? qs.map((q) => ({
               qtype: q.qtype || 'multiple_choice',
               text: q.text,
-              options: optionRows(q.options),
-              correct_index: q.correct_index ?? 0,
+              options: q.qtype === 'true_false' ? [...TRUE_FALSE_OPTIONS] : optionRows(q.options),
+              correct_index: q.qtype === 'true_false' ? (q.correct_index ?? null) : (q.correct_index ?? 0),
               explanation: q.explanation || '',
               time_limit: q.time_limit ?? null,
               meta: q.meta || {},
@@ -135,8 +138,17 @@ export default function Editor() {
   // rows up rather than leaving the question short of its own minimum
   function changeType(index, qtype) {
     setQuestions((qs) =>
-      qs.map((q, i) => {
-        if (i !== index) return q
+      qs.map((current, i) => {
+        if (i !== index) return current
+        if (qtype === 'true_false') {
+          // its two answers are fixed; which one is right is still the author's call
+          return { ...current, qtype, options: [...TRUE_FALSE_OPTIONS], correct_index: null }
+        }
+        // leaving true/false: its fixed answers are not text the author wrote,
+        // so start from blank rows
+        const q = current.qtype === 'true_false'
+          ? { ...current, options: Array(DEFAULT_OPTIONS).fill(''), correct_index: 0 }
+          : current
         const missing = Math.max(0, minOptions(qtype) - q.options.length)
         const meta = qtype === 'scale' ? { ...DEFAULT_SCALE, ...q.meta } : q.meta
         return { ...q, qtype, meta, options: [...q.options, ...Array(missing).fill('')] }
@@ -255,6 +267,8 @@ export default function Editor() {
         if (nonEmpty.length < 2) return `${label}: ${t('נדרשות לפחות שתי תשובות.')}`
         if (!filled[q.correct_index]) return `${label}: ${t('יש לסמן תשובה נכונה שאינה ריקה.')}`
       }
+      if (q.qtype === 'true_false' && ![0, 1].includes(q.correct_index))
+        return `${label}: ${t('יש לסמן אם התשובה הנכונה היא "נכון" או "לא נכון".')}`
       if (q.qtype === 'poll' && nonEmpty.length < 2) return `${label}: ${t('סקר דורש לפחות שתי אפשרויות.')}`
       if (q.qtype === 'ranking' && nonEmpty.length < 3) return `${label}: ${t('סדר נכון דורש לפחות שלושה פריטים.')}`
       if (['multiple_choice', 'poll', 'ranking'].includes(q.qtype) && nonEmpty.length > MAX_OPTIONS)
@@ -343,6 +357,9 @@ export default function Editor() {
           }
         })
         return { ...base, options: kept, correct_index: correct }
+      }
+      if (q.qtype === 'true_false') {
+        return { ...base, options: [...TRUE_FALSE_OPTIONS], correct_index: q.correct_index }
       }
       if (q.qtype === 'poll' || q.qtype === 'ranking') {
         return { ...base, options: q.options.map((o) => o.trim()).filter(Boolean) }
@@ -627,6 +644,29 @@ export default function Editor() {
                 {q.qtype === 'multiple_choice'
                   ? t('לחצו על ה-✓ כדי לסמן את התשובה הנכונה.')
                   : t('סקר - אין תשובה נכונה ואין ניקוד; המסך המוקרן יציג את ההתפלגות.')}
+              </p>
+            </>
+          )}
+
+          {q.qtype === 'true_false' && (
+            <>
+              <span className="field-title">{t('מהי התשובה הנכונה?')}</span>
+              <div className={`tf-edit${[0, 1].includes(q.correct_index) ? ' marked' : ''}`}>
+                {TRUE_FALSE_OPTIONS.map((opt, j) => (
+                  <button
+                    type="button"
+                    key={j}
+                    className={`tf-choice color-${optionColor(q, j)}${q.correct_index === j ? ' selected' : ''}`}
+                    aria-pressed={q.correct_index === j}
+                    onClick={() => updateQuestion(i, { correct_index: j })}
+                  >
+                    {q.correct_index === j && <span className="tf-check">✓</span>}
+                    {t(opt)}
+                  </button>
+                ))}
+              </div>
+              <p className="muted small">
+                {t('המשתתפים יבחרו "נכון" או "לא נכון". לחצו על התשובה הנכונה כדי לסמן אותה.')}
               </p>
             </>
           )}

@@ -670,6 +670,23 @@ button.scale-point-btn:active { transform: scale(0.94); }
 .poll-shape.color-5 { color: #2dd4bf; }
 .poll-shape.color-6 { color: #ff9a3c; }
 
+/* a revealed answer: the correct bar turns green and glows, the others step
+   back. Text is muted with colour rather than opacity, because the labels'
+   entrance animation ends on full opacity and would override it */
+.poll-bar.correct {
+  background: linear-gradient(180deg, #5fd23a, var(--c-green));
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.85), 0 0 30px rgba(124, 252, 142, 0.55);
+}
+.poll-bar.wrong { opacity: 0.4; filter: saturate(0.55); }
+.poll-col.wrong .poll-value { color: rgba(255, 255, 255, 0.8); }
+.poll-label.correct .poll-text { color: #7cfc8e; }
+.poll-label.wrong .poll-text { color: rgba(255, 255, 255, 0.75); }
+
+/* live bars ease to each new count. The mount animation has to let go of
+   the height once it ends (fill backwards, not both), or it would hold the
+   bar where it started and the transition would never show */
+.poll-chart.live .poll-bar { animation-fill-mode: backwards; transition: height 0.45s ease; }
+
 .poll-caption {
   display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
   gap: 4px 18px; margin: 14px 0 0;
@@ -697,6 +714,13 @@ button.scale-point-btn:active { transform: scale(0.94); }
   backdrop-filter: blur(4px);
   animation: fadeUp 0.5s ease 0.4s both;
 }
+
+/* explanation text: paragraphs, and lists for lines that start with "-" */
+.explanation p { margin: 0; }
+.explanation > * + * { margin-top: 0.45em; }
+.explanation ul { margin: 0; padding-inline-start: 1.25em; text-align: start; }
+.explanation li + li { margin-top: 0.2em; }
+.explanation-lead { display: block; }
 
 /* ---------- leaderboard + podium ---------- */
 
@@ -884,6 +908,37 @@ button.scale-point-btn:active { transform: scale(0.94); }
 .hotspot-marker.pulse { animation: popIn 0.4s ease both, glowPulse 1.6s ease-in-out 0.4s infinite; }
 .hotspot-play { display: flex; flex-direction: column; gap: 12px; align-items: center; width: 100%; }
 .type-hint { background: #f2f0fa; border-radius: 10px; padding: 12px 16px; }
+
+/* ---------- true / false ---------- */
+
+.tf-edit { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 6px; }
+.tf-choice {
+  font: inherit; font-size: 1.35rem; font-weight: 800; color: #fff; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  min-height: 84px; padding: 16px 12px; border-radius: 14px;
+  border: 3px solid transparent;
+  transition: box-shadow 0.15s, border-color 0.15s, opacity 0.15s, transform 0.08s;
+}
+.tf-choice.color-1 { background: var(--c-blue); }
+.tf-choice.color-6 { background: var(--c-orange); }
+.tf-choice:active { transform: scale(0.98); }
+.tf-choice.selected {
+  border-color: #fff;
+  box-shadow: 0 0 0 3px var(--c-green), 0 4px 14px rgba(38, 137, 12, 0.35);
+}
+.tf-edit.marked .tf-choice:not(.selected) { opacity: 0.5; }
+.tf-check {
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 30px; height: 30px; border-radius: 50%;
+  background: #fff; color: var(--c-green); font-size: 1rem; font-weight: 900;
+  animation: popIn 0.25s ease both;
+}
+
+/* on the phone the two answers fill the screen: one tap, nothing to read */
+.options-grid.player.true-false .option-tile {
+  min-height: 26vh; justify-content: center;
+  font-size: clamp(1.6rem, 6vw, 2.4rem);
+}
 
 /* ---------- player screen ---------- */
 
