@@ -644,7 +644,16 @@ export default function Host({ user }) {
         </div>
       )}
 
-      {session.status === 'leaderboard' && (
+      {/* an unscored quiz never opens the leaderboard; should the state be
+          reached anyway, no names or scores are shown - only the way on */}
+      {session.status === 'leaderboard' && !scored && (
+        <div className="stage-inner" key={`l-${session.current_index}`}>
+          <h1 className="stage-title">{quiz.title}</h1>
+          {nextButtons()}
+        </div>
+      )}
+
+      {session.status === 'leaderboard' && scored && (
         <div className="stage-inner" key={`l-${session.current_index}`}>
           <h1 className="stage-title">{teamsOn ? t('מצב הקבוצות') : t('טבלת המובילים')}</h1>
           {teamScoreBoard()}
