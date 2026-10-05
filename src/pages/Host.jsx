@@ -10,6 +10,7 @@ import WordCloud from '../components/WordCloud.jsx'
 import PollChart from '../components/PollChart.jsx'
 import Scale from '../components/Scale.jsx'
 import SurveyConclusion from '../components/SurveyConclusion.jsx'
+import LiveConclusion from '../components/LiveConclusion.jsx'
 import Explanation from '../components/Explanation.jsx'
 import { scaleCounts, scalePoints } from '../lib/survey'
 import { scaleSummary, correctShare } from '../lib/stats'
@@ -17,7 +18,36 @@ import { OPTION_SHAPES, optionColor, optionLabel } from '../lib/optionStyle'
 import { deadlineMs } from '../lib/timer'
 import { TEAM_COLORS, kendallSimilarity, hasCorrectOption } from '../lib/questionTypes'
 import { quizFlags, LIVE_BAR_TYPES, ANSWER_SLIDE_TYPES } from '../lib/quizMode'
+import { fetchAll, mergeById } from '../lib/fetchAll'
 import { useI18n } from '../lib/i18n.js'
+
+// Every answer to one question, read past the API's 1,000-row cap. Ordered
+// by arrival, so an answer that lands mid-read joins the last page instead
+// of shifting the pages already read.
+function fetchAnswers(sessionId, questionId) {
+  return fetchAll(() =>
+    supabase
+      .from('answers')
+      .select('*')
+      .eq('session_id', sessionId)
+      .eq('question_id', questionId)
+      .order('answered_at')
+      .order('id')
+  )
+}
+
+// The session's players, read past the row cap as well; id breaks ties so
+// the pages keep a stable order.
+function fetchPlayers(sessionId, column = 'joined_at', ascending = true) {
+  return fetchAll(() =>
+    supabase
+      .from('players')
+      .select('*')
+      .eq('session_id', sessionId)
+      .order(column, { ascending })
+      .order('id')
+  )
+}
 
 export default function Host({ user }) {
   const { t } = useI18n()
@@ -32,6 +62,7 @@ export default function Host({ user }) {
   const [qr, setQr] = useState('')
   const [error, setError] = useState('')
   const revealDone = useRef(null)
+  const currentQuestionId = useRef(null) // read by the resync, which outlives renders
 
   const currentQuestion = useMemo(
     () => (session && session.current_index >= 0 ? questions[session.current_index] : null),
@@ -44,6 +75,10 @@ export default function Host({ user }) {
   const teamsOn = scored && quiz?.teams_enabled && quiz?.teams?.length
   const timeLimit = (session?.status === 'question' && currentQuestion?.time_limit) || null
   const timeLeft = useSecondsLeft(session?.question_started_at, timeLimit)
+
+  useEffect(() => {
+    currentQuestionId.current = currentQuestion?.id ?? null
+  }, [currentQuestion?.id])
 
   // initial load
   useEffect(() => {
@@ -80,20 +115,25 @@ export default function Host({ user }) {
   // realtime subscriptions, plus a resync safety net - realtime events
   // that arrive while the projector machine is asleep or offline are
   // never replayed, which would leave the host screen showing a stale
-  // player list and answer count for the rest of the game
+  // player list and answer count for the rest of the game.
+  // The resync reads only the open question's answers, in full, and adds
+  // them to what is already held: a whole-session read would hit the API's
+  // row cap past 1,000 answers, and replacing state with it would silently
+  // drop the rest.
   useEffect(() => {
     let cancelled = false
 
     async function resync() {
+      const questionId = currentQuestionId.current
       const [{ data: s }, { data: ps }, { data: as }] = await Promise.all([
         supabase.from('game_sessions').select('*').eq('id', sessionId).single(),
-        supabase.from('players').select('*').eq('session_id', sessionId).order('joined_at'),
-        supabase.from('answers').select('*').eq('session_id', sessionId),
+        fetchPlayers(sessionId),
+        questionId ? fetchAnswers(sessionId, questionId) : Promise.resolve({ data: null }),
       ])
       if (cancelled) return
       if (s) setSession((prev) => (prev && prev.status === s.status && prev.current_index === s.current_index ? prev : s))
       if (ps) setPlayers(ps)
-      if (as) setAnswers(as)
+      if (as) setAnswers((prev) => mergeById(prev, as))
     }
 
     const channel = supabase
@@ -139,37 +179,29 @@ export default function Host({ user }) {
     let cancelled = false
     async function refresh() {
       if (['reveal', 'leaderboard', 'finished'].includes(session.status)) {
-        const { data } = await supabase
-          .from('players')
-          .select('*')
-          .eq('session_id', sessionId)
-          .order('score', { ascending: false })
+        const { data } = await fetchPlayers(sessionId, 'score', false)
         if (!cancelled && data) setPlayers(data)
       }
-      if (session.status === 'finished') {
-        const { data } = await supabase.from('answers').select('*').eq('session_id', sessionId)
-        if (!cancelled && data) setAnswers(data)
+      // the survey and live summaries read every answer, one question at a
+      // time; a scored quiz ends on its podium and needs none of them
+      if (session.status === 'finished' && !scored) {
+        const wanted = survey ? questions : questions.filter((q) => LIVE_BAR_TYPES.includes(q.qtype))
+        const results = await Promise.all(wanted.map((q) => fetchAnswers(sessionId, q.id)))
+        if (!cancelled) setAnswers((prev) => mergeById(prev, results.flatMap((r) => r.data || [])))
       }
       if (['question', 'reveal'].includes(session.status) && currentQuestion) {
-        const { data } = await supabase
-          .from('answers')
-          .select('*')
-          .eq('session_id', sessionId)
-          .eq('question_id', currentQuestion.id)
-        if (!cancelled && data) {
-          setAnswers((prev) => {
-            const known = new Set(prev.map((a) => a.id))
-            return [...prev, ...data.filter((a) => !known.has(a.id))]
-          })
-        }
+        const { data } = await fetchAnswers(sessionId, currentQuestion.id)
+        if (!cancelled && data) setAnswers((prev) => mergeById(prev, data))
       }
     }
     refresh()
     return () => { cancelled = true }
     // currentQuestion is part of the key: on a host refresh mid-question the
     // session arrives before the questions, so without it the answers for the
-    // open question are never fetched and the screen shows "answered: 0"
-  }, [session?.status, session?.current_index, currentQuestion?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+    // open question are never fetched and the screen shows "answered: 0".
+    // scored and the question count join it for the summary, which needs the
+    // quiz and its questions to know what to read
+  }, [session?.status, session?.current_index, currentQuestion?.id, scored, questions.length]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const currentAnswers = useMemo(
     () => (currentQuestion ? answers.filter((a) => a.question_id === currentQuestion.id) : []),
@@ -257,6 +289,9 @@ export default function Host({ user }) {
   const answerText = answerSlide ? optionLabel(currentQuestion, currentQuestion.correct_index, t) : ''
   // a long answer steps down in size so the slide still fits on one screen
   const answerLength = answerText.length > 28 ? ' longer' : answerText.length > 12 ? ' long' : ''
+  // and so does a long explanation, never below the 24px floor
+  const explanationLength = (currentQuestion?.explanation || '').length
+  const explanationSize = explanationLength > 260 ? ' longer' : explanationLength > 120 ? ' long' : ''
 
   const scale = currentQuestion?.qtype === 'scale' ? currentQuestion.meta : null
   const scalePointList = scale ? scalePoints(scale) : []
@@ -483,7 +518,7 @@ export default function Host({ user }) {
             className={`answer-body${currentQuestion.explanation ? ' with-explanation' : ''}${currentQuestion.options.length > 4 ? ' many' : ''}`}
           >
             {currentQuestion.explanation && (
-              <div className="answer-explanation">
+              <div className={`answer-explanation${explanationSize}`}>
                 <Explanation text={currentQuestion.explanation} />
               </div>
             )}
@@ -648,7 +683,19 @@ export default function Host({ user }) {
         </div>
       )}
 
-      {session.status === 'finished' && !survey && (
+      {session.status === 'finished' && live && (
+        <div className="stage-inner wide" key="finished-live">
+          {quiz.logo_url && <img className="client-logo small" src={quiz.logo_url} alt={t('לוגו הלקוח')} />}
+          <h1 className="stage-title">⚡ {quiz.title}</h1>
+          <h2 className="stage-subtitle">{t('סיכום החידון')}</h2>
+          <LiveConclusion questions={questions} answers={answers} participants={players.length} />
+          {isHost && (
+            <button className="btn ghost light-ghost" onClick={() => navigate('/')}>{t('חזרה לספרייה')}</button>
+          )}
+        </div>
+      )}
+
+      {session.status === 'finished' && scored && (
         <div className="stage-inner" key="finished">
           <Confetti />
           {quiz.logo_url && <img className="client-logo small" src={quiz.logo_url} alt={t('לוגו הלקוח')} />}

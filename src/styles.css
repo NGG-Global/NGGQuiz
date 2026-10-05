@@ -524,6 +524,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--p
 .mode-hint { margin: 10px 0 0; }
 .mode-anonymous { margin-top: 14px; padding-top: 14px; border-top: 1px solid #eceef4; flex-wrap: nowrap; }
 .field-hint { font-weight: 400; }
+.field-warning { color: #9a4a00; font-weight: 600; }
 
 .scale-edit { display: flex; flex-direction: column; gap: 10px; }
 .scale-ends { display: flex; flex-wrap: wrap; gap: 14px; }
@@ -812,6 +813,8 @@ button.scale-point-btn:active { transform: scale(0.94); }
 }
 .switch input:checked + .slider { background: var(--primary); }
 .switch input:checked + .slider::before { transform: translateX(-22px); }
+/* the knob starts on the inline-start side, so in English it travels right */
+[dir='ltr'] .switch input:checked + .slider::before { transform: translateX(22px); }
 
 .teams-config { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; animation: fadeUp 0.3s ease both; }
 .team-mode-row { gap: 18px; }
@@ -1015,7 +1018,7 @@ button.scale-point-btn:active { transform: scale(0.94); }
    0.5s, the explanation at about 1.1s - so the host still reveals with a
    single click and moves on with another */
 
-.answer-slide { gap: clamp(10px, 1.6vh, 24px); }
+.stage-inner.answer-slide { max-width: 1600px; gap: clamp(10px, 1.6vh, 24px); }
 .answer-slide .btn.xl { margin-top: 0; }
 .answer-question {
   margin: 0; max-width: 1100px;
@@ -1073,6 +1076,8 @@ button.scale-point-btn:active { transform: scale(0.94); }
   text-align: start;
   animation: fadeUp 0.6s ease 1.1s both;
 }
+.answer-explanation.long { font-size: clamp(1.5rem, 1.9vw, 2.1rem); }
+.answer-explanation.longer { font-size: clamp(1.5rem, 1.6vw, 1.75rem); }
 .answer-explanation .explanation li::marker { color: #7cfc8e; }
 
 /* the chart starts once its column has faded in, not underneath it */
@@ -1103,13 +1108,66 @@ button.scale-point-btn:active { transform: scale(0.94); }
   }
   .answer-body.with-explanation .answer-explanation { max-width: none; }
   .answer-body.with-explanation.many { grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr); }
-  .answer-body.with-explanation.many .answer-explanation { font-size: clamp(1.5rem, 1.9vw, 2.1rem); }
+  .answer-body.with-explanation.many .answer-explanation:not(.longer) { font-size: clamp(1.5rem, 1.9vw, 2.1rem); }
   .stage.live .answer-body.with-explanation.many .poll-chart { --poll-label-space: calc(clamp(1.5rem, 2vw, 2.2rem) * 1.1 + 1.5rem * 1.1 + 8px); }
   .stage.live .answer-body.with-explanation.many .poll-col { padding: 0 3px; }
-  .stage.live .answer-body.with-explanation.many .poll-label { font-size: 1.5rem; padding: 0 2px; }
+  .stage.live .answer-body.with-explanation.many .poll-label { font-size: clamp(1.1rem, 1.6vw, 1.5rem); padding: 0 2px; }
   .stage.live .answer-body.with-explanation.many .poll-value strong { font-size: clamp(1.5rem, 2vw, 2.2rem); }
   .stage.live .answer-body.with-explanation.many .poll-count { font-size: 1.5rem; }
 }
+
+/* ---------- the live summary ---------- */
+
+.stage.live .btn.ghost.light-ghost { font-size: 1.5rem; padding: 12px 28px; }
+
+.live-conclusion { width: 100%; display: flex; flex-direction: column; gap: 22px; }
+.live-headline { display: flex; flex-wrap: wrap; gap: 16px; justify-content: center; }
+.live-stat {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  min-width: 200px; padding: 16px 28px; border-radius: 18px;
+  background: rgba(255, 255, 255, 0.12); border: 1px solid rgba(255, 255, 255, 0.2);
+  backdrop-filter: blur(4px);
+  animation: popIn 0.45s ease both; animation-delay: calc(var(--i, 0) * 90ms);
+}
+.live-stat.big { background: rgba(38, 137, 12, 0.55); border-color: rgba(124, 252, 142, 0.5); }
+.live-stat-value { font-size: clamp(2.6rem, 4.6vw, 4.4rem); font-weight: 900; line-height: 1.05; font-variant-numeric: tabular-nums; }
+.live-stat-label { font-size: 1.5rem; font-weight: 700; opacity: 0.92; }
+
+/* two cards side by side on a wide screen; five or more answers take the
+   full row so their labels stay whole */
+.live-questions { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
+@media (min-width: 1400px) {
+  .live-questions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .live-question.many { grid-column: 1 / -1; }
+}
+.live-question {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  padding: 18px 22px; border-radius: 20px;
+  background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.16);
+  animation: fadeUp 0.5s ease both; animation-delay: calc(var(--i, 0) * 110ms + 0.2s);
+}
+.live-question-title {
+  display: flex; align-items: center; gap: 12px; align-self: stretch; margin: 0;
+  font-size: clamp(1.5rem, 1.8vw, 2rem); line-height: 1.3; text-align: start;
+}
+.live-question-num {
+  flex: none; width: 44px; height: 44px; border-radius: 50%;
+  background: rgba(255, 255, 255, 0.22);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 1.5rem; font-weight: 800;
+}
+.live-question-share {
+  display: flex; flex-wrap: wrap; align-items: baseline; justify-content: center; gap: 4px 16px;
+  margin: 0; font-size: 1.5rem; font-weight: 700;
+}
+.live-question-share strong { font-size: clamp(1.8rem, 2.4vw, 2.4rem); font-weight: 900; color: #7cfc8e; }
+.live-question-empty { margin: 8px 0; font-size: 1.5rem; opacity: 0.85; }
+.stage.live .live-question .poll-plot { height: clamp(170px, 24vh, 280px); }
+.stage.live .live-question .poll-chart { --poll-label-space: calc(clamp(1.5rem, 2vw, 2.2rem) * 1.1 + 1.5rem * 1.1 + 8px); }
+.stage.live .live-question .poll-value strong { font-size: clamp(1.5rem, 2vw, 2.2rem); }
+.stage.live .live-question .poll-count,
+.stage.live .live-question .poll-label,
+.stage.live .live-question .poll-caption { font-size: 1.5rem; }
 
 /* short projectors (1280x720, 1280x800): the same screens, tighter, so
    nothing needs scrolling; the 1920x1080 sizes above are untouched */

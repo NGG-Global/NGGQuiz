@@ -217,11 +217,20 @@ export default function Play() {
     document.addEventListener('visibilitychange', onWake)
     window.addEventListener('focus', onWake)
     window.addEventListener('online', onWake)
-    const poll = setInterval(sync, 5000)
+    // every 5 seconds give or take 20%, drawn afresh each time, so hundreds
+    // of phones that joined together do not poll the database in lockstep
+    let poll = null
+    const schedule = () => {
+      poll = setTimeout(() => {
+        sync()
+        if (!cancelled) schedule()
+      }, 5000 * (0.8 + Math.random() * 0.4))
+    }
+    schedule()
 
     return () => {
       cancelled = true
-      clearInterval(poll)
+      clearTimeout(poll)
       document.removeEventListener('visibilitychange', onWake)
       window.removeEventListener('focus', onWake)
       window.removeEventListener('online', onWake)

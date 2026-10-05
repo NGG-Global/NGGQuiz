@@ -36,6 +36,9 @@ function optionRows(saved) {
   return Array.from({ length: rows }, (_, i) => opts[i] || '')
 }
 
+// the longest explanation the live answer slide is sure to fit on one screen
+const EXPLANATION_ADVISED_LENGTH = 250
+
 const TYPE_LABEL = Object.fromEntries(
   [...QUESTION_TYPES, ...SURVEY_TYPES].map((t) => [t.value, t.label])
 )
@@ -889,7 +892,18 @@ export default function Editor() {
             />
             {live && (
               <span className="muted small field-hint">
-                {t('שורה שמתחילה ב-"- " תוצג כנקודה ברשימה.')}
+                {t('שורה שמתחילה במקף (-) תוצג כנקודה ברשימה.')}
+                {/* the answer slide keeps a 24px floor for the hall, so a
+                    long explanation can no longer fit on one screen */}
+                {q.explanation.length > EXPLANATION_ADVISED_LENGTH && (
+                  <span className="field-warning">
+                    {' '}
+                    {t('ההסבר ארוך ({count} תווים). מעל {max} תווים ייתכן שהשקופית לא תיכנס במסך אחד.', {
+                      count: q.explanation.length,
+                      max: EXPLANATION_ADVISED_LENGTH,
+                    })}
+                  </span>
+                )}
               </span>
             )}
           </label>
