@@ -47,11 +47,18 @@ export default function Editor() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
 
-  // a survey is created from the library's menu (/edit/new?kind=survey);
-  // an existing one carries its kind on the row
-  const [kind, setKind] = useState(isNew && searchParams.get('kind') === 'survey' ? 'survey' : 'quiz')
+  // a survey is created from the library's menu (/edit/new?kind=survey), and
+  // so is a live quiz (/edit/new?mode=live: unscored, anonymous join, a
+  // true/false question to start); an existing quiz carries its kind and
+  // settings on the row
+  const presetSurvey = isNew && searchParams.get('kind') === 'survey'
+  const presetLive = isNew && !presetSurvey && searchParams.get('mode') === 'live'
+  const [kind, setKind] = useState(presetSurvey ? 'survey' : 'quiz')
   const survey = kind === 'survey'
   const questionTypes = survey ? SURVEY_TYPES : QUESTION_TYPES
+  const [scored, setScored] = useState(!presetLive)
+  const [anonymous, setAnonymous] = useState(presetLive)
+  const live = !survey && !scored
 
   const [title, setTitle] = useState('')
   const [subtitle, setSubtitle] = useState('')
@@ -62,7 +69,7 @@ export default function Editor() {
   const [teamMode, setTeamMode] = useState('manual')
   const [teams, setTeams] = useState(['', ''])
   const [questions, setQuestions] = useState(() =>
-    [blankQuestion(isNew && searchParams.get('kind') === 'survey' ? 'scale' : 'multiple_choice')]
+    [blankQuestion(presetSurvey ? 'scale' : presetLive ? 'true_false' : 'multiple_choice')]
   )
   const [loading, setLoading] = useState(!isNew)
   const [saving, setSaving] = useState(false)
@@ -100,6 +107,8 @@ export default function Editor() {
       setSubtitle(quiz.subtitle || '')
       setLogoUrl(quiz.logo_url || '')
       setFolderId(quiz.folder_id || '')
+      setScored(quiz.scored !== false)
+      setAnonymous(quiz.anonymous === true)
       setTeamsEnabled(quiz.teams_enabled || false)
       setTeamMode(quiz.team_mode || 'manual')
       setTeams(quiz.teams?.length ? quiz.teams : ['', ''])
@@ -202,6 +211,13 @@ export default function Editor() {
     })
   }
 
+  // live mode usually runs with anonymous join, so choosing it turns that on;
+  // the author can still switch it off
+  function chooseScored(next) {
+    setScored(next)
+    if (!next) setAnonymous(true)
+  }
+
   function applyTimerToAll(limit) {
     setQuestions((qs) => qs.map((q) => ({ ...q, time_limit: limit })))
   }
@@ -251,7 +267,7 @@ export default function Editor() {
 
   function validate() {
     if (!title.trim()) return t('יש להזין כותרת לחידון.')
-    if (teamsEnabled) {
+    if (teamsEnabled && !live) {
       const names = teams.map((t) => t.trim()).filter(Boolean)
       if (names.length < 2) return t('מצב צוותים דורש לפחות שתי קבוצות עם שם.')
       if (new Set(names.map((n) => n.toLowerCase())).size !== names.length)
@@ -296,15 +312,24 @@ export default function Editor() {
     setSaving(true)
 
     const cleanTeams = teams.map((t) => t.trim()).filter(Boolean)
+    // teams need a leaderboard and anonymous join needs its absence; the
+    // database enforces both, so the switches the author can no longer see
+    // are cleared here rather than rejected there
+    const teamsOn = teamsEnabled && !live
     const quizFields = {
       kind,
       title: title.trim(),
       subtitle: subtitle.trim() || null,
       logo_url: logoUrl || null,
       folder_id: folderId || null,
-      teams_enabled: teamsEnabled,
+      teams_enabled: teamsOn,
       team_mode: teamMode,
-      teams: teamsEnabled ? cleanTeams : null,
+      teams: teamsOn ? cleanTeams : null,
+    }
+    // the mode belongs to quizzes; a survey row keeps the column defaults
+    if (!survey) {
+      quizFields.scored = scored
+      quizFields.anonymous = !scored && anonymous
     }
 
     let id = quizId
@@ -421,7 +446,9 @@ export default function Editor() {
         <h2>
           {survey
             ? (isNew ? t('סקר חדש') : t('עריכת סקר'))
-            : (isNew ? t('חידון חדש') : t('עריכת חידון'))}
+            : live
+              ? (isNew ? t('חידון חי חדש') : t('עריכת חידון חי'))
+              : (isNew ? t('חידון חדש') : t('עריכת חידון'))}
         </h2>
         <button className="btn primary" onClick={save} disabled={saving}>
           {saving ? t('שומר...') : t('שמירה בספרייה')}
@@ -480,6 +507,51 @@ export default function Editor() {
       </div>
 
       {!survey && (
+        <div className="card mode-card">
+          <span className="field-title">{t('מצב החידון')}</span>
+          <div className="mode-tabs" role="radiogroup" aria-label={t('מצב החידון')}>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={scored}
+              className={scored ? 'active' : ''}
+              onClick={() => chooseScored(true)}
+            >
+              {t('עם ניקוד ותחרות')}
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={!scored}
+              className={!scored ? 'active' : ''}
+              onClick={() => chooseScored(false)}
+            >
+              {t('ללא ניקוד – תוצאות בזמן אמת')}
+            </button>
+          </div>
+          <p className="muted small mode-hint">
+            {scored
+              ? t('ניקוד לפי נכונות ומהירות, טבלת מובילים ופודיום בסיום.')
+              : t('ללא ניקוד וללא טבלת מובילים: התוצאות עולות על המסך המוקרן בזמן שהמשתתפים עונים, ובחשיפה מוצגת התשובה הנכונה עם ההסבר.')}
+          </p>
+          {!scored && (
+            <div className="row space-between mode-anonymous">
+              <div>
+                <span className="field-title">{t('כניסה אנונימית (בלי כינוי)')}</span>
+                <p className="muted small no-margin">
+                  {t('המשתתפים נכנסים ישירות מהקישור או מקוד ה-QR, ושמות אינם מוצגים בשום מקום.')}
+                </p>
+              </div>
+              <label className="switch">
+                <input type="checkbox" checked={anonymous} onChange={(e) => setAnonymous(e.target.checked)} />
+                <span className="slider" />
+              </label>
+            </div>
+          )}
+        </div>
+      )}
+
+      {!survey && scored && (
       <div className="card teams-card">
         <div className="row space-between">
           <div>
@@ -810,11 +882,16 @@ export default function Editor() {
           <label>
             {t('הסבר לתשובה (רשות - יוצג בעת חשיפת התשובה)')}
             <textarea
-              rows={2}
+              rows={4}
               value={q.explanation}
               onChange={(e) => updateQuestion(i, { explanation: e.target.value })}
               placeholder={t('לדוגמה: התשובה נכונה מפני ש...')}
             />
+            {live && (
+              <span className="muted small field-hint">
+                {t('שורה שמתחילה ב-"- " תוצג כנקודה ברשימה.')}
+              </span>
+            )}
           </label>
           )}
         </div>

@@ -381,6 +381,15 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--p
 }
 .client-logo.small { max-height: 64px; padding: 8px 14px; }
 
+/* anonymous lobby: one large count instead of a wall of names */
+.join-counter { display: flex; flex-direction: column; align-items: center; gap: 4px; margin: 4px 0; }
+.join-counter-value {
+  font-size: clamp(5rem, 14vw, 12rem); font-weight: 900; line-height: 1;
+  font-variant-numeric: tabular-nums; text-shadow: 0 6px 30px rgba(0, 0, 0, 0.35);
+  animation: popIn 0.35s ease both;
+}
+.join-counter-label { font-size: clamp(1.5rem, 2.6vw, 2.6rem); font-weight: 800; opacity: 0.9; }
+
 .player-chips { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; max-width: 800px; }
 .chip {
   background: rgba(255, 255, 255, 0.16); border-radius: 999px;
@@ -501,6 +510,11 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--p
   background: #ece7fa; color: var(--primary);
   border-radius: 999px; padding: 2px 10px; font-size: 0.75rem; font-weight: 800;
 }
+.kind-badge.live { background: #fff1e0; color: #9a4a00; }
+
+.mode-hint { margin: 10px 0 0; }
+.mode-anonymous { margin-top: 14px; padding-top: 14px; border-top: 1px solid #eceef4; flex-wrap: nowrap; }
+.field-hint { font-weight: 400; }
 
 .scale-edit { display: flex; flex-direction: column; gap: 10px; }
 .scale-ends { display: flex; flex-wrap: wrap; gap: 14px; }

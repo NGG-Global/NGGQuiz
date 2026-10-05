@@ -4,6 +4,7 @@ import { supabase } from '../supabaseClient'
 import { OPTION_SHAPES, optionColor, optionLabel } from '../lib/optionStyle'
 import { deadlineMs } from '../lib/timer'
 import { TEAM_COLORS, teamColor, shuffled, hasCorrectOption } from '../lib/questionTypes'
+import { quizFlags } from '../lib/quizMode'
 import { useI18n } from '../lib/i18n.js'
 import LanguageToggle from '../components/LanguageToggle.jsx'
 import Countdown, { useSecondsLeft } from '../components/Countdown.jsx'
@@ -11,6 +12,17 @@ import Scale from '../components/Scale.jsx'
 
 function storageKey(pin) {
   return `nggquiz-player-${pin}`
+}
+
+// the quiz columns a phone needs, for both the join and the game screens
+const QUIZ_FIELDS = 'kind, scored, anonymous, teams_enabled, team_mode, teams, title'
+
+// An anonymous player still needs a players row - every answer points at
+// one - so each phone gets a random nickname that no screen ever shows.
+function anonymousNickname() {
+  const bytes = new Uint8Array(4)
+  crypto.getRandomValues(bytes)
+  return `anon-${Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')}`
 }
 
 export default function Play() {
@@ -23,6 +35,8 @@ export default function Play() {
   const [quiz, setQuiz] = useState(null)
   const [player, setPlayer] = useState(null)
   const [pendingJoin, setPendingJoin] = useState(null) // {session, quiz, nickname} waiting for team pick
+  const [joinInfo, setJoinInfo] = useState(null) // {pin, session, quiz} looked up for the join form
+  const [autoJoining, setAutoJoining] = useState(false)
   const [questions, setQuestions] = useState([])
   const [myAnswers, setMyAnswers] = useState({}) // question_id -> result row
   const [rankInfo, setRankInfo] = useState(null)
@@ -31,6 +45,7 @@ export default function Play() {
   const [loadFailed, setLoadFailed] = useState(false)
   const [reloadToken, setReloadToken] = useState(0)
   const answering = useRef(false)
+  const autoJoinStarted = useRef(false)
 
   // per-question input state
   const [cloudText, setCloudText] = useState('')
@@ -42,12 +57,13 @@ export default function Play() {
     [session, questions]
   )
   const myAnswer = currentQuestion ? myAnswers[currentQuestion.id] : null
-  const survey = quiz?.kind === 'survey'
+  const { survey, scored, anonymous } = quizFlags(quiz)
   const timeLimit = (session?.status === 'question' && currentQuestion?.time_limit) || null
   const timeLeft = useSecondsLeft(session?.question_started_at, timeLimit)
   const timeUp = timeLimit != null && timeLeft === 0
 
-  // restore a previous join after refresh
+  // restore a previous join after refresh; with nothing to restore, a link
+  // to an anonymous quiz joins straight away, since there is nothing to type
   useEffect(() => {
     if (!pinParam) return
     let saved
@@ -56,7 +72,10 @@ export default function Play() {
     } catch {
       saved = null // corrupted entry - fall back to the join screen
     }
-    if (!saved?.playerId || !saved?.sessionId) return
+    if (!saved?.playerId || !saved?.sessionId) {
+      autoJoinIfAnonymous(pinParam)
+      return
+    }
     const { playerId, sessionId } = saved
     let cancelled = false
     async function restore() {
@@ -72,6 +91,19 @@ export default function Play() {
     return () => { cancelled = true }
   }, [pinParam])
 
+  // an anonymous quiz needs no nickname: once a full PIN is typed (or comes
+  // in the link), look the quiz up so the form can drop the field
+  useEffect(() => {
+    if (player || pin.length !== 6 || joinInfo?.pin === pin) return
+    // a link's PIN is already being looked up by the automatic join
+    if (pin === pinParam && autoJoinStarted.current) return
+    let cancelled = false
+    lookupJoin(pin).then((info) => {
+      if (!cancelled && !info.error) setJoinInfo({ pin, ...info })
+    })
+    return () => { cancelled = true }
+  }, [pin, player]) // eslint-disable-line react-hooks/exhaustive-deps
+
   // load quiz info + questions once the session is known.
   // This must not fail silently: without the questions the player sees an
   // empty screen for the rest of the game, so a failed fetch is retried
@@ -84,7 +116,7 @@ export default function Play() {
 
     async function load(attempt = 0) {
       const [{ data: qz }, { data: qs }] = await Promise.all([
-        supabase.from('quizzes').select('kind, teams_enabled, team_mode, teams, title').eq('id', quizId).single(),
+        supabase.from('quizzes').select(QUIZ_FIELDS).eq('id', quizId).single(),
         supabase
           .from('questions')
           .select('id, qtype, text, options, meta, position, explanation, time_limit')
@@ -226,38 +258,71 @@ export default function Play() {
     return () => { cancelled = true }
   }, [session?.status, session?.id, player]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function join(e) {
-    e.preventDefault()
-    setError('')
-    const cleanPin = pin.trim()
-    const cleanNick = nickname.trim()
-    if (!cleanPin || !cleanNick) return
-    setBusy(true)
-
+  // the open session behind a PIN, and its quiz
+  async function lookupJoin(cleanPin) {
     const { data: s, error: sErr } = await supabase
       .from('game_sessions')
       .select('*')
       .eq('pin', cleanPin)
       .neq('status', 'finished')
       .maybeSingle()
-    if (sErr) {
+    if (sErr) return { error: 'offline' }
+    if (!s) return { error: 'missing' }
+    const { data: qz } = await supabase.from('quizzes').select(QUIZ_FIELDS).eq('id', s.quiz_id).single()
+    return { session: s, quiz: qz }
+  }
+
+  async function autoJoinIfAnonymous(cleanPin) {
+    // once per page: React's development double-run of effects, or a second
+    // call while the first is in flight, must not register two players
+    if (autoJoinStarted.current) return
+    autoJoinStarted.current = true
+    setAutoJoining(true)
+    const info = await lookupJoin(cleanPin)
+    if (!info.error) setJoinInfo({ pin: cleanPin, ...info })
+    if (!info.error && quizFlags(info.quiz).anonymous) {
+      await registerAnonymous(info.session, info.quiz, cleanPin)
+    }
+    setAutoJoining(false)
+  }
+
+  async function join(e) {
+    e.preventDefault()
+    setError('')
+    const cleanPin = pin.trim()
+    const cleanNick = nickname.trim()
+    if (!cleanPin) return
+    // the nickname may only be skipped once the quiz is known to be anonymous
+    const knownAnonymous = joinInfo?.pin === cleanPin && quizFlags(joinInfo.quiz).anonymous
+    if (!cleanNick && !knownAnonymous) return
+    setBusy(true)
+
+    const info = await lookupJoin(cleanPin)
+    if (info.error === 'offline') {
       // a failed request is not a wrong PIN - saying so sends the player
       // hunting for a code that was correct all along
       setError(t('אין כרגע חיבור לשרת. בדקו את החיבור לאינטרנט ונסו שוב.'))
       setBusy(false)
       return
     }
-    if (!s) {
+    if (info.error) {
       setError(t('לא נמצא חידון פעיל עם הקוד הזה.'))
       setBusy(false)
       return
     }
+    const { session: s, quiz: qz } = info
+    setJoinInfo({ pin: cleanPin, ...info })
 
-    const { data: qz } = await supabase
-      .from('quizzes')
-      .select('kind, teams_enabled, team_mode, teams, title')
-      .eq('id', s.quiz_id)
-      .single()
+    if (quizFlags(qz).anonymous) {
+      await registerAnonymous(s, qz, cleanPin)
+      return
+    }
+    if (!cleanNick) {
+      // the quiz turned out not to be anonymous after all: the form now
+      // shows the nickname field again
+      setBusy(false)
+      return
+    }
 
     if (qz?.teams_enabled && qz.team_mode === 'manual' && qz.teams?.length) {
       // let the player pick a team before registering
@@ -297,7 +362,36 @@ export default function Play() {
       setPendingJoin(null)
       return
     }
-    sessionStorage.setItem(storageKey(cleanPin), JSON.stringify({ playerId: p.id, sessionId: s.id }))
+    completeJoin(s, qz, p, cleanPin)
+  }
+
+  async function registerAnonymous(s, qz, cleanPin) {
+    setBusy(true)
+    let p = null
+    // a clash between two random nicknames is all but impossible, but it is
+    // retried rather than shown to someone who never typed a nickname
+    for (let attempt = 0; attempt <= 3 && !p; attempt++) {
+      const { data, error: pErr } = await supabase
+        .from('players')
+        .insert({ session_id: s.id, nickname: anonymousNickname(), team: null })
+        .select()
+        .single()
+      if (!pErr) p = data
+      else if (pErr.code !== '23505') break
+    }
+    setBusy(false)
+    if (!p) {
+      setError(t('ההצטרפות נכשלה. נסו שוב.'))
+      return
+    }
+    completeJoin(s, qz, p, cleanPin)
+  }
+
+  // a joined player is remembered per PIN, so a refresh keeps the same player
+  function completeJoin(s, qz, p, cleanPin) {
+    try {
+      sessionStorage.setItem(storageKey(cleanPin), JSON.stringify({ playerId: p.id, sessionId: s.id }))
+    } catch { /* storage unavailable - the game still works, a refresh just rejoins */ }
     setSession(s)
     setQuiz(qz)
     setPlayer(p)
@@ -391,7 +485,20 @@ export default function Play() {
     )
   }
 
+  if (!player && autoJoining) {
+    return (
+      <div className="center-screen">
+        <div className="card login-card">
+          <h1 className="brand">NGG Quiz</h1>
+          <div className="spinner" />
+          <p className="muted" style={{ textAlign: 'center' }}>{t('מצטרף...')}</p>
+        </div>
+      </div>
+    )
+  }
+
   if (!player) {
+    const anonymousJoin = joinInfo?.pin === pin && quizFlags(joinInfo.quiz).anonymous
     return (
       <div className="center-screen">
         <form className="card login-card" onSubmit={join}>
@@ -410,10 +517,14 @@ export default function Play() {
               style={{ textAlign: 'center', letterSpacing: '0.3em', fontSize: '1.4rem' }}
             />
           </label>
-          <label>
-            {t('כינוי')}
-            <input value={nickname} onChange={(e) => setNickname(e.target.value)} maxLength={20} required />
-          </label>
+          {anonymousJoin ? (
+            <p className="muted small no-margin">{t('הצטרפות אנונימית - אין צורך בכינוי.')}</p>
+          ) : (
+            <label>
+              {t('כינוי')}
+              <input value={nickname} onChange={(e) => setNickname(e.target.value)} maxLength={20} required />
+            </label>
+          )}
           {error && <div className="error-box">{error}</div>}
           <button className="btn primary" disabled={busy}>
             {busy ? t('מצטרף...') : t('הצטרפות')}
@@ -430,13 +541,15 @@ export default function Play() {
   return (
     <div className="stage player-stage">
       <div className="player-topbar">
-        <span className="chip">{player.nickname}</span>
+        {/* the hidden nickname of an anonymous player is never shown, not even
+            for the moment before the quiz settings arrive */}
+        {quiz && !anonymous && <span className="chip">{player.nickname}</span>}
         {player.team && (
           <span className="chip" style={myTeamColor ? { background: myTeamColor } : undefined}>
             {player.team}
           </span>
         )}
-        {!survey && rankInfo && <span className="chip">{t("{score} נק'", { score: rankInfo.score })}</span>}
+        {scored && rankInfo && <span className="chip">{t("{score} נק'", { score: rankInfo.score })}</span>}
       </div>
 
       {session.status === 'lobby' && (

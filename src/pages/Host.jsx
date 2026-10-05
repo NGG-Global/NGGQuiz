@@ -15,6 +15,7 @@ import { scaleSummary } from '../lib/stats'
 import { OPTION_SHAPES, optionColor, optionLabel } from '../lib/optionStyle'
 import { deadlineMs } from '../lib/timer'
 import { TEAM_COLORS, kendallSimilarity, hasCorrectOption } from '../lib/questionTypes'
+import { quizFlags } from '../lib/quizMode'
 import { useI18n } from '../lib/i18n.js'
 
 export default function Host({ user }) {
@@ -36,8 +37,10 @@ export default function Host({ user }) {
     [session, questions]
   )
   const isHost = session && user && session.host_id === user.id
-  const survey = quiz?.kind === 'survey'
-  const teamsOn = !survey && quiz?.teams_enabled && quiz?.teams?.length
+  const { survey, scored, anonymous } = quizFlags(quiz)
+  // teams compete on points, so they need a scored quiz (the database holds
+  // the same rule; this also covers a row written before it existed)
+  const teamsOn = scored && quiz?.teams_enabled && quiz?.teams?.length
   const timeLimit = (session?.status === 'question' && currentQuestion?.time_limit) || null
   const timeLeft = useSecondsLeft(session?.question_started_at, timeLimit)
 
@@ -315,8 +318,18 @@ export default function Host({ user }) {
           </div>
           <p className="join-url" dir="ltr">{playLink(session.pin)}</p>
           {qr && <img className="qr-big" src={qr} alt={t('קוד QR להצטרפות')} />}
-          <h3>{t('משתתפים ({count})', { count: players.length })}</h3>
-          {teamsOn ? (
+          {anonymous ? (
+            // no names in anonymous mode: one count the whole room can read
+            <div className="join-counter" aria-live="polite">
+              <span className="join-counter-value" key={players.length}>{players.length}</span>
+              <span className="join-counter-label">
+                {players.length === 1 ? t('משתתף הצטרף') : t('משתתפים הצטרפו')}
+              </span>
+            </div>
+          ) : (
+            <h3>{t('משתתפים ({count})', { count: players.length })}</h3>
+          )}
+          {anonymous ? null : teamsOn ? (
             <div className="team-lobby">
               {quiz.teams.map((t, ti) => {
                 const members = players.filter((p) => p.team === t)

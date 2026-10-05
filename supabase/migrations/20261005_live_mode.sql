@@ -45,8 +45,10 @@ begin
 exception when duplicate_object then null;
 end $$;
 
--- scoring, with true_false scored like multiple_choice; a true/false answer
--- outside its two options is rejected as a tampered client
+-- scoring, with true_false scored like multiple_choice (a true/false answer
+-- outside its two options is rejected as a tampered client), and no points
+-- at all in an unscored quiz, while is_correct is still set for the
+-- answer slide
 create or replace function public.score_answer()
 returns trigger
 language plpgsql
@@ -56,6 +58,7 @@ as $$
 declare
   q record;
   s record;
+  quiz_scored boolean;
   elapsed numeric;
   base numeric;
   arr jsonb;
@@ -72,6 +75,8 @@ begin
   if s.status is distinct from 'question' then
     raise exception 'session is not accepting answers';
   end if;
+
+  select scored into quiz_scored from public.quizzes where id = q.quiz_id;
 
   elapsed := greatest(0, extract(epoch from (now() - s.question_started_at)));
 
@@ -139,6 +144,12 @@ begin
   else
     -- poll / word_cloud: no right answer, no points
     new.is_correct := false;
+    new.points := 0;
+  end if;
+
+  -- live mode (an unscored quiz) earns no points, so players.score stays 0;
+  -- is_correct is still set above because the answer slide counts it
+  if quiz_scored is false then
     new.points := 0;
   end if;
 

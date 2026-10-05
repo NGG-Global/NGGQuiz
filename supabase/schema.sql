@@ -172,6 +172,8 @@ end $$;
 --   ranking:         base scaled by Kendall-tau similarity
 --   hotspot:         base scaled by distance from the target
 --   poll/word_cloud: participation only, no points
+-- A quiz with scored = false (live mode) still marks answers right or
+-- wrong, but every answer earns 0 points.
 -- ------------------------------------------------------------
 
 create or replace function public.score_answer()
@@ -183,6 +185,7 @@ as $$
 declare
   q record;
   s record;
+  quiz_scored boolean;
   elapsed numeric;
   base numeric;
   arr jsonb;
@@ -199,6 +202,8 @@ begin
   if s.status is distinct from 'question' then
     raise exception 'session is not accepting answers';
   end if;
+
+  select scored into quiz_scored from public.quizzes where id = q.quiz_id;
 
   elapsed := greatest(0, extract(epoch from (now() - s.question_started_at)));
 
@@ -266,6 +271,12 @@ begin
   else
     -- poll / word_cloud: no right answer, no points
     new.is_correct := false;
+    new.points := 0;
+  end if;
+
+  -- live mode (an unscored quiz) earns no points, so players.score stays 0;
+  -- is_correct is still set above because the answer slide counts it
+  if quiz_scored is false then
     new.points := 0;
   end if;
 
