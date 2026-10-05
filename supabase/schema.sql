@@ -35,6 +35,8 @@ create table if not exists public.quizzes (
   team_mode text not null default 'manual'
     check (team_mode in ('manual', 'random')),
   teams jsonb,                     -- array of team names
+  scored boolean not null default true,      -- false = live mode: no points, live results
+  anonymous boolean not null default false,  -- join without a nickname (unscored quizzes only)
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -44,10 +46,11 @@ create table if not exists public.questions (
   quiz_id uuid not null references public.quizzes(id) on delete cascade,
   position int not null,
   qtype text not null default 'multiple_choice'
-    check (qtype in ('multiple_choice', 'poll', 'word_cloud', 'ranking', 'hotspot', 'scale')),
+    check (qtype in ('multiple_choice', 'poll', 'word_cloud', 'ranking', 'hotspot', 'scale', 'true_false')),
   text text not null,
-  options jsonb,                   -- mc/poll: answer strings; ranking: items in the CORRECT order
-  correct_index int,               -- multiple_choice only
+  options jsonb,                   -- mc/poll: answer strings; ranking: items in the CORRECT order;
+                                   -- true_false: always ['נכון', 'לא נכון']
+  correct_index int,               -- multiple_choice / true_false only
   meta jsonb,                      -- hotspot: {image_url, x, y} in percent coordinates;
                                    -- scale: {min, max, low_label, high_label}
   explanation text,                -- optional, shown when the answer is revealed
@@ -105,6 +108,8 @@ alter table public.questions alter column correct_index drop not null;
 alter table public.questions alter column options drop not null;
 alter table public.questions add column if not exists time_limit int;
 alter table public.quizzes add column if not exists kind text not null default 'quiz';
+alter table public.quizzes add column if not exists scored boolean not null default true;
+alter table public.quizzes add column if not exists anonymous boolean not null default false;
 alter table public.players add column if not exists team text;
 alter table public.answers add column if not exists answer jsonb;
 alter table public.answers alter column answer_index drop not null;
@@ -125,13 +130,36 @@ begin
 exception when duplicate_object then null;
 end $$;
 
--- the question types grew with the scale question, so the constraint is
--- replaced rather than added: a database created before surveys still
--- carries the older list
+-- anonymous join only makes sense without a leaderboard (anonymous => unscored),
+-- and teams only make sense with one (teams => scored)
+do $$
+begin
+  alter table public.quizzes
+    add constraint quizzes_live_settings
+    check ((not scored or not anonymous) and (scored or not teams_enabled));
+exception when duplicate_object then null;
+end $$;
+
+-- the question types grew (scale, then true_false), so the constraint is
+-- replaced rather than added: an older database still carries the older list
 alter table public.questions drop constraint if exists questions_qtype_check;
 alter table public.questions
   add constraint questions_qtype_check
-  check (qtype in ('multiple_choice', 'poll', 'word_cloud', 'ranking', 'hotspot', 'scale'));
+  check (qtype in ('multiple_choice', 'poll', 'word_cloud', 'ranking', 'hotspot', 'scale', 'true_false'));
+
+-- a true/false question has exactly its two answers and one of them marked
+-- correct. CASE keeps jsonb_array_length away from other types, and the
+-- explicit null test matters: a CHECK that evaluates to null passes
+do $$
+begin
+  alter table public.questions
+    add constraint questions_true_false_shape
+    check (case when qtype = 'true_false'
+      then options is not null and jsonb_array_length(options) = 2
+           and correct_index is not null and correct_index in (0, 1)
+      else true end);
+exception when duplicate_object then null;
+end $$;
 
 -- ------------------------------------------------------------
 -- Scoring: computed on the server so clients cannot tamper.
@@ -140,10 +168,12 @@ alter table public.questions
 -- only in the interface. Speed always matters: the speed base is
 -- 500-1000 points with an exponential decay by response time
 -- (instant -> 1000, ~30s -> ~684, several minutes -> ~500).
---   multiple_choice: full base when correct, 0 otherwise
+--   multiple_choice / true_false: full base when correct, 0 otherwise
 --   ranking:         base scaled by Kendall-tau similarity
 --   hotspot:         base scaled by distance from the target
 --   poll/word_cloud: participation only, no points
+-- A quiz with scored = false (live mode) still marks answers right or
+-- wrong, but every answer earns 0 points.
 -- ------------------------------------------------------------
 
 create or replace function public.score_answer()
@@ -155,6 +185,7 @@ as $$
 declare
   q record;
   s record;
+  quiz_scored boolean;
   elapsed numeric;
   base numeric;
   arr jsonb;
@@ -165,12 +196,14 @@ declare
   sim numeric;
   dist numeric;
 begin
-  select qtype, correct_index, options, meta, time_limit into q from public.questions where id = new.question_id;
+  select quiz_id, qtype, correct_index, options, meta, time_limit into q from public.questions where id = new.question_id;
   select status, question_started_at into s from public.game_sessions where id = new.session_id;
 
   if s.status is distinct from 'question' then
     raise exception 'session is not accepting answers';
   end if;
+
+  select scored into quiz_scored from public.quizzes where id = q.quiz_id;
 
   elapsed := greatest(0, extract(epoch from (now() - s.question_started_at)));
 
@@ -182,7 +215,13 @@ begin
 
   base := 500 + 500 * exp(-elapsed / 30.0);
 
-  if q.qtype = 'multiple_choice' then
+  if q.qtype in ('multiple_choice', 'true_false') then
+    -- a true/false answer can only be one of its two options; anything else
+    -- comes from a tampered client, not from a wrong answer
+    if q.qtype = 'true_false'
+       and (new.answer_index is null or new.answer_index not in (0, 1)) then
+      raise exception 'invalid true/false answer';
+    end if;
     new.is_correct := (new.answer_index = q.correct_index);
     new.points := case when new.is_correct then round(base) else 0 end;
 
@@ -232,6 +271,12 @@ begin
   else
     -- poll / word_cloud: no right answer, no points
     new.is_correct := false;
+    new.points := 0;
+  end if;
+
+  -- live mode (an unscored quiz) earns no points, so players.score stays 0;
+  -- is_correct is still set above because the answer slide counts it
+  if quiz_scored is false then
     new.points := 0;
   end if;
 

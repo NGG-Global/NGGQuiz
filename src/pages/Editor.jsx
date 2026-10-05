@@ -1,18 +1,21 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { supabase } from '../supabaseClient'
-import { QUESTION_TYPES, TEAM_COLORS } from '../lib/questionTypes'
-import { MAX_OPTIONS, MIN_OPTIONS, MIN_RANKING_OPTIONS, DEFAULT_OPTIONS } from '../lib/optionStyle'
+import { QUESTION_TYPES, TEAM_COLORS, TRUE_FALSE_OPTIONS } from '../lib/questionTypes'
+import { MAX_OPTIONS, MIN_OPTIONS, MIN_RANKING_OPTIONS, DEFAULT_OPTIONS, optionColor } from '../lib/optionStyle'
 import { TIMER_PRESETS } from '../lib/timer'
 import { SURVEY_TYPES, SCALE_PRESETS, DEFAULT_SCALE, scalePoints } from '../lib/survey'
 import { useI18n } from '../lib/i18n.js'
 
 function blankQuestion(qtype = 'multiple_choice', timeLimit = null) {
+  const trueFalse = qtype === 'true_false'
   return {
     qtype,
     text: '',
-    options: Array(DEFAULT_OPTIONS).fill(''),
-    correct_index: 0,
+    options: trueFalse ? [...TRUE_FALSE_OPTIONS] : Array(DEFAULT_OPTIONS).fill(''),
+    // a true/false question starts unmarked, so its answer is always one the
+    // author chose rather than a default nobody noticed
+    correct_index: trueFalse ? null : 0,
     explanation: '',
     time_limit: timeLimit,
     meta: qtype === 'scale' ? { ...DEFAULT_SCALE } : {},
@@ -33,6 +36,9 @@ function optionRows(saved) {
   return Array.from({ length: rows }, (_, i) => opts[i] || '')
 }
 
+// the longest explanation the live answer slide is sure to fit on one screen
+const EXPLANATION_ADVISED_LENGTH = 250
+
 const TYPE_LABEL = Object.fromEntries(
   [...QUESTION_TYPES, ...SURVEY_TYPES].map((t) => [t.value, t.label])
 )
@@ -44,11 +50,18 @@ export default function Editor() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
 
-  // a survey is created from the library's menu (/edit/new?kind=survey);
-  // an existing one carries its kind on the row
-  const [kind, setKind] = useState(isNew && searchParams.get('kind') === 'survey' ? 'survey' : 'quiz')
+  // a survey is created from the library's menu (/edit/new?kind=survey), and
+  // so is a live quiz (/edit/new?mode=live: unscored, anonymous join, a
+  // true/false question to start); an existing quiz carries its kind and
+  // settings on the row
+  const presetSurvey = isNew && searchParams.get('kind') === 'survey'
+  const presetLive = isNew && !presetSurvey && searchParams.get('mode') === 'live'
+  const [kind, setKind] = useState(presetSurvey ? 'survey' : 'quiz')
   const survey = kind === 'survey'
   const questionTypes = survey ? SURVEY_TYPES : QUESTION_TYPES
+  const [scored, setScored] = useState(!presetLive)
+  const [anonymous, setAnonymous] = useState(presetLive)
+  const live = !survey && !scored
 
   const [title, setTitle] = useState('')
   const [subtitle, setSubtitle] = useState('')
@@ -59,7 +72,7 @@ export default function Editor() {
   const [teamMode, setTeamMode] = useState('manual')
   const [teams, setTeams] = useState(['', ''])
   const [questions, setQuestions] = useState(() =>
-    [blankQuestion(isNew && searchParams.get('kind') === 'survey' ? 'scale' : 'multiple_choice')]
+    [blankQuestion(presetSurvey ? 'scale' : presetLive ? 'true_false' : 'multiple_choice')]
   )
   const [loading, setLoading] = useState(!isNew)
   const [saving, setSaving] = useState(false)
@@ -97,6 +110,8 @@ export default function Editor() {
       setSubtitle(quiz.subtitle || '')
       setLogoUrl(quiz.logo_url || '')
       setFolderId(quiz.folder_id || '')
+      setScored(quiz.scored !== false)
+      setAnonymous(quiz.anonymous === true)
       setTeamsEnabled(quiz.teams_enabled || false)
       setTeamMode(quiz.team_mode || 'manual')
       setTeams(quiz.teams?.length ? quiz.teams : ['', ''])
@@ -105,8 +120,8 @@ export default function Editor() {
           ? qs.map((q) => ({
               qtype: q.qtype || 'multiple_choice',
               text: q.text,
-              options: optionRows(q.options),
-              correct_index: q.correct_index ?? 0,
+              options: q.qtype === 'true_false' ? [...TRUE_FALSE_OPTIONS] : optionRows(q.options),
+              correct_index: q.qtype === 'true_false' ? (q.correct_index ?? null) : (q.correct_index ?? 0),
               explanation: q.explanation || '',
               time_limit: q.time_limit ?? null,
               meta: q.meta || {},
@@ -135,8 +150,17 @@ export default function Editor() {
   // rows up rather than leaving the question short of its own minimum
   function changeType(index, qtype) {
     setQuestions((qs) =>
-      qs.map((q, i) => {
-        if (i !== index) return q
+      qs.map((current, i) => {
+        if (i !== index) return current
+        if (qtype === 'true_false') {
+          // its two answers are fixed; which one is right is still the author's call
+          return { ...current, qtype, options: [...TRUE_FALSE_OPTIONS], correct_index: null }
+        }
+        // leaving true/false: its fixed answers are not text the author wrote,
+        // so start from blank rows
+        const q = current.qtype === 'true_false'
+          ? { ...current, options: Array(DEFAULT_OPTIONS).fill(''), correct_index: 0 }
+          : current
         const missing = Math.max(0, minOptions(qtype) - q.options.length)
         const meta = qtype === 'scale' ? { ...DEFAULT_SCALE, ...q.meta } : q.meta
         return { ...q, qtype, meta, options: [...q.options, ...Array(missing).fill('')] }
@@ -190,6 +214,13 @@ export default function Editor() {
     })
   }
 
+  // live mode usually runs with anonymous join, so choosing it turns that on;
+  // the author can still switch it off
+  function chooseScored(next) {
+    setScored(next)
+    if (!next) setAnonymous(true)
+  }
+
   function applyTimerToAll(limit) {
     setQuestions((qs) => qs.map((q) => ({ ...q, time_limit: limit })))
   }
@@ -239,7 +270,7 @@ export default function Editor() {
 
   function validate() {
     if (!title.trim()) return t('יש להזין כותרת לחידון.')
-    if (teamsEnabled) {
+    if (teamsEnabled && !live) {
       const names = teams.map((t) => t.trim()).filter(Boolean)
       if (names.length < 2) return t('מצב צוותים דורש לפחות שתי קבוצות עם שם.')
       if (new Set(names.map((n) => n.toLowerCase())).size !== names.length)
@@ -255,6 +286,8 @@ export default function Editor() {
         if (nonEmpty.length < 2) return `${label}: ${t('נדרשות לפחות שתי תשובות.')}`
         if (!filled[q.correct_index]) return `${label}: ${t('יש לסמן תשובה נכונה שאינה ריקה.')}`
       }
+      if (q.qtype === 'true_false' && ![0, 1].includes(q.correct_index))
+        return `${label}: ${t('יש לסמן אם התשובה הנכונה היא "נכון" או "לא נכון".')}`
       if (q.qtype === 'poll' && nonEmpty.length < 2) return `${label}: ${t('סקר דורש לפחות שתי אפשרויות.')}`
       if (q.qtype === 'ranking' && nonEmpty.length < 3) return `${label}: ${t('סדר נכון דורש לפחות שלושה פריטים.')}`
       if (['multiple_choice', 'poll', 'ranking'].includes(q.qtype) && nonEmpty.length > MAX_OPTIONS)
@@ -282,15 +315,24 @@ export default function Editor() {
     setSaving(true)
 
     const cleanTeams = teams.map((t) => t.trim()).filter(Boolean)
+    // teams need a leaderboard and anonymous join needs its absence; the
+    // database enforces both, so the switches the author can no longer see
+    // are cleared here rather than rejected there
+    const teamsOn = teamsEnabled && !live
     const quizFields = {
       kind,
       title: title.trim(),
       subtitle: subtitle.trim() || null,
       logo_url: logoUrl || null,
       folder_id: folderId || null,
-      teams_enabled: teamsEnabled,
+      teams_enabled: teamsOn,
       team_mode: teamMode,
-      teams: teamsEnabled ? cleanTeams : null,
+      teams: teamsOn ? cleanTeams : null,
+    }
+    // the mode belongs to quizzes; a survey row keeps the column defaults
+    if (!survey) {
+      quizFields.scored = scored
+      quizFields.anonymous = !scored && anonymous
     }
 
     let id = quizId
@@ -343,6 +385,9 @@ export default function Editor() {
           }
         })
         return { ...base, options: kept, correct_index: correct }
+      }
+      if (q.qtype === 'true_false') {
+        return { ...base, options: [...TRUE_FALSE_OPTIONS], correct_index: q.correct_index }
       }
       if (q.qtype === 'poll' || q.qtype === 'ranking') {
         return { ...base, options: q.options.map((o) => o.trim()).filter(Boolean) }
@@ -404,7 +449,9 @@ export default function Editor() {
         <h2>
           {survey
             ? (isNew ? t('סקר חדש') : t('עריכת סקר'))
-            : (isNew ? t('חידון חדש') : t('עריכת חידון'))}
+            : live
+              ? (isNew ? t('חידון חי חדש') : t('עריכת חידון חי'))
+              : (isNew ? t('חידון חדש') : t('עריכת חידון'))}
         </h2>
         <button className="btn primary" onClick={save} disabled={saving}>
           {saving ? t('שומר...') : t('שמירה בספרייה')}
@@ -463,6 +510,51 @@ export default function Editor() {
       </div>
 
       {!survey && (
+        <div className="card mode-card">
+          <span className="field-title">{t('מצב החידון')}</span>
+          <div className="mode-tabs" role="radiogroup" aria-label={t('מצב החידון')}>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={scored}
+              className={scored ? 'active' : ''}
+              onClick={() => chooseScored(true)}
+            >
+              {t('עם ניקוד ותחרות')}
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={!scored}
+              className={!scored ? 'active' : ''}
+              onClick={() => chooseScored(false)}
+            >
+              {t('ללא ניקוד – תוצאות בזמן אמת')}
+            </button>
+          </div>
+          <p className="muted small mode-hint">
+            {scored
+              ? t('ניקוד לפי נכונות ומהירות, טבלת מובילים ופודיום בסיום.')
+              : t('ללא ניקוד וללא טבלת מובילים: התוצאות עולות על המסך המוקרן בזמן שהמשתתפים עונים, ובחשיפה מוצגת התשובה הנכונה עם ההסבר.')}
+          </p>
+          {!scored && (
+            <div className="row space-between mode-anonymous">
+              <div>
+                <span className="field-title">{t('כניסה אנונימית (בלי כינוי)')}</span>
+                <p className="muted small no-margin">
+                  {t('המשתתפים נכנסים ישירות מהקישור או מקוד ה-QR, ושמות אינם מוצגים בשום מקום.')}
+                </p>
+              </div>
+              <label className="switch">
+                <input type="checkbox" checked={anonymous} onChange={(e) => setAnonymous(e.target.checked)} />
+                <span className="slider" />
+              </label>
+            </div>
+          )}
+        </div>
+      )}
+
+      {!survey && scored && (
       <div className="card teams-card">
         <div className="row space-between">
           <div>
@@ -631,6 +723,29 @@ export default function Editor() {
             </>
           )}
 
+          {q.qtype === 'true_false' && (
+            <>
+              <span className="field-title">{t('מהי התשובה הנכונה?')}</span>
+              <div className={`tf-edit${[0, 1].includes(q.correct_index) ? ' marked' : ''}`}>
+                {TRUE_FALSE_OPTIONS.map((opt, j) => (
+                  <button
+                    type="button"
+                    key={j}
+                    className={`tf-choice color-${optionColor(q, j)}${q.correct_index === j ? ' selected' : ''}`}
+                    aria-pressed={q.correct_index === j}
+                    onClick={() => updateQuestion(i, { correct_index: j })}
+                  >
+                    {q.correct_index === j && <span className="tf-check">✓</span>}
+                    {t(opt)}
+                  </button>
+                ))}
+              </div>
+              <p className="muted small">
+                {t('המשתתפים יבחרו "נכון" או "לא נכון". לחצו על התשובה הנכונה כדי לסמן אותה.')}
+              </p>
+            </>
+          )}
+
           {q.qtype === 'scale' && (() => {
             const points = scalePoints(q.meta)
             const low = points[0]
@@ -770,11 +885,27 @@ export default function Editor() {
           <label>
             {t('הסבר לתשובה (רשות - יוצג בעת חשיפת התשובה)')}
             <textarea
-              rows={2}
+              rows={4}
               value={q.explanation}
               onChange={(e) => updateQuestion(i, { explanation: e.target.value })}
               placeholder={t('לדוגמה: התשובה נכונה מפני ש...')}
             />
+            {live && (
+              <span className="muted small field-hint">
+                {t('שורה שמתחילה במקף (-) תוצג כנקודה ברשימה.')}
+                {/* the answer slide keeps a 24px floor for the hall, so a
+                    long explanation can no longer fit on one screen */}
+                {q.explanation.length > EXPLANATION_ADVISED_LENGTH && (
+                  <span className="field-warning">
+                    {' '}
+                    {t('ההסבר ארוך ({count} תווים). מעל {max} תווים ייתכן שהשקופית לא תיכנס במסך אחד.', {
+                      count: q.explanation.length,
+                      max: EXPLANATION_ADVISED_LENGTH,
+                    })}
+                  </span>
+                )}
+              </span>
+            )}
           </label>
           )}
         </div>

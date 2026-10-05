@@ -35,7 +35,7 @@ export default function Library({ user }) {
       const [{ data: qz, error: qErr }, { data: fs, error: fErr }] = await Promise.all([
         supabase
           .from('quizzes')
-          .select('id, owner_id, folder_id, kind, title, subtitle, logo_url, updated_at, questions(count)')
+          .select('id, owner_id, folder_id, kind, scored, title, subtitle, logo_url, updated_at, questions(count)')
           .order('updated_at', { ascending: false }),
         supabase.from('folders').select('*').order('name'),
       ])
@@ -137,15 +137,19 @@ export default function Library({ user }) {
   async function duplicateQuiz(quiz) {
     setError('')
     setDuplicatingId(quiz.id)
+    // the mode settings travel with the copy: without them a live quiz
+    // would quietly come back as a scored one
     const { data: src } = await supabase
       .from('quizzes')
-      .select('kind, teams_enabled, team_mode, teams')
+      .select('kind, scored, anonymous, teams_enabled, team_mode, teams')
       .eq('id', quiz.id)
       .single()
     const { data: newQuiz, error } = await supabase
       .from('quizzes')
       .insert({
         kind: src?.kind ?? quiz.kind ?? 'quiz',
+        scored: src?.scored ?? quiz.scored ?? true,
+        anonymous: src?.anonymous ?? false,
         title: `${quiz.title} (עותק)`,
         subtitle: quiz.subtitle,
         logo_url: quiz.logo_url,
@@ -154,7 +158,7 @@ export default function Library({ user }) {
         team_mode: src?.team_mode ?? 'manual',
         teams: src?.teams ?? null,
       })
-      .select('id, owner_id, folder_id, kind, title, subtitle, logo_url, updated_at')
+      .select('id, owner_id, folder_id, kind, scored, title, subtitle, logo_url, updated_at')
       .single()
     if (error) {
       setError(t('שכפול החידון נכשל.'))
@@ -241,6 +245,13 @@ export default function Library({ user }) {
                 <span>
                   <strong>{t('חידון')}</strong>
                   <span className="muted small">{t('תשובות נכונות, ניקוד ופודיום')}</span>
+                </span>
+              </button>
+              <button role="menuitem" onClick={() => navigate('/edit/new?mode=live')}>
+                <span className="create-menu-icon">⚡</span>
+                <span>
+                  <strong>{t('חידון חי')}</strong>
+                  <span className="muted small">{t('ללא ניקוד, תוצאות בזמן אמת, כניסה ללא כינוי')}</span>
                 </span>
               </button>
               <button role="menuitem" onClick={() => navigate('/edit/new?kind=survey')}>
@@ -354,6 +365,9 @@ export default function Library({ user }) {
                 {quiz.logo_url && <img className="quiz-logo-thumb" src={quiz.logo_url} alt={t('לוגו הלקוח')} />}
                 <h3>
                   {quiz.kind === 'survey' && <span className="kind-badge">📋 {t('סקר')}</span>}
+                  {quiz.kind === 'quiz' && quiz.scored === false && (
+                    <span className="kind-badge live">⚡ {t('זמן אמת')}</span>
+                  )}
                   {quiz.title}
                 </h3>
                 {quiz.subtitle && <p className="muted">{quiz.subtitle}</p>}

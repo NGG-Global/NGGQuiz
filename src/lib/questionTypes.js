@@ -4,7 +4,18 @@ export const QUESTION_TYPES = [
   { value: 'word_cloud', label: 'ענן מילים', icon: '☁️' },
   { value: 'ranking', label: 'סדר נכון', icon: '🔢' },
   { value: 'hotspot', label: 'נקודה על תמונה', icon: '🎯' },
+  { value: 'true_false', label: 'נכון / לא נכון', icon: '⚖️' },
 ]
+
+// The two answers a true/false question always stores. Like every other
+// interface string they are kept in Hebrew and translated where they are
+// shown (optionLabel), so a question reads correctly in either language.
+export const TRUE_FALSE_OPTIONS = ['נכון', 'לא נכון']
+
+// Question types with written options and exactly one correct option.
+export function hasCorrectOption(qtype) {
+  return qtype === 'multiple_choice' || qtype === 'true_false'
+}
 
 export const TEAM_COLORS = ['#e21b3c', '#1368ce', '#d89e00', '#26890c', '#8e2de2', '#0d9488']
 

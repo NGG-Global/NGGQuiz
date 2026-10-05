@@ -10,12 +10,44 @@ import WordCloud from '../components/WordCloud.jsx'
 import PollChart from '../components/PollChart.jsx'
 import Scale from '../components/Scale.jsx'
 import SurveyConclusion from '../components/SurveyConclusion.jsx'
+import LiveConclusion from '../components/LiveConclusion.jsx'
+import Explanation from '../components/Explanation.jsx'
 import { scaleCounts, scalePoints } from '../lib/survey'
-import { scaleSummary } from '../lib/stats'
-import { OPTION_SHAPES } from '../lib/optionStyle'
+import { scaleSummary, correctShare } from '../lib/stats'
+import { OPTION_SHAPES, optionColor, optionLabel } from '../lib/optionStyle'
 import { deadlineMs } from '../lib/timer'
-import { TEAM_COLORS, kendallSimilarity } from '../lib/questionTypes'
+import { TEAM_COLORS, kendallSimilarity, hasCorrectOption } from '../lib/questionTypes'
+import { quizFlags, LIVE_BAR_TYPES, ANSWER_SLIDE_TYPES } from '../lib/quizMode'
+import { fetchAll, mergeById } from '../lib/fetchAll'
 import { useI18n } from '../lib/i18n.js'
+
+// Every answer to one question, read past the API's 1,000-row cap. Ordered
+// by arrival, so an answer that lands mid-read joins the last page instead
+// of shifting the pages already read.
+function fetchAnswers(sessionId, questionId) {
+  return fetchAll(() =>
+    supabase
+      .from('answers')
+      .select('*')
+      .eq('session_id', sessionId)
+      .eq('question_id', questionId)
+      .order('answered_at')
+      .order('id')
+  )
+}
+
+// The session's players, read past the row cap as well; id breaks ties so
+// the pages keep a stable order.
+function fetchPlayers(sessionId, column = 'joined_at', ascending = true) {
+  return fetchAll(() =>
+    supabase
+      .from('players')
+      .select('*')
+      .eq('session_id', sessionId)
+      .order(column, { ascending })
+      .order('id')
+  )
+}
 
 export default function Host({ user }) {
   const { t } = useI18n()
@@ -30,16 +62,23 @@ export default function Host({ user }) {
   const [qr, setQr] = useState('')
   const [error, setError] = useState('')
   const revealDone = useRef(null)
+  const currentQuestionId = useRef(null) // read by the resync, which outlives renders
 
   const currentQuestion = useMemo(
     () => (session && session.current_index >= 0 ? questions[session.current_index] : null),
     [session, questions]
   )
   const isHost = session && user && session.host_id === user.id
-  const survey = quiz?.kind === 'survey'
-  const teamsOn = !survey && quiz?.teams_enabled && quiz?.teams?.length
+  const { survey, scored, anonymous, live } = quizFlags(quiz)
+  // teams compete on points, so they need a scored quiz (the database holds
+  // the same rule; this also covers a row written before it existed)
+  const teamsOn = scored && quiz?.teams_enabled && quiz?.teams?.length
   const timeLimit = (session?.status === 'question' && currentQuestion?.time_limit) || null
   const timeLeft = useSecondsLeft(session?.question_started_at, timeLimit)
+
+  useEffect(() => {
+    currentQuestionId.current = currentQuestion?.id ?? null
+  }, [currentQuestion?.id])
 
   // initial load
   useEffect(() => {
@@ -76,20 +115,25 @@ export default function Host({ user }) {
   // realtime subscriptions, plus a resync safety net - realtime events
   // that arrive while the projector machine is asleep or offline are
   // never replayed, which would leave the host screen showing a stale
-  // player list and answer count for the rest of the game
+  // player list and answer count for the rest of the game.
+  // The resync reads only the open question's answers, in full, and adds
+  // them to what is already held: a whole-session read would hit the API's
+  // row cap past 1,000 answers, and replacing state with it would silently
+  // drop the rest.
   useEffect(() => {
     let cancelled = false
 
     async function resync() {
+      const questionId = currentQuestionId.current
       const [{ data: s }, { data: ps }, { data: as }] = await Promise.all([
         supabase.from('game_sessions').select('*').eq('id', sessionId).single(),
-        supabase.from('players').select('*').eq('session_id', sessionId).order('joined_at'),
-        supabase.from('answers').select('*').eq('session_id', sessionId),
+        fetchPlayers(sessionId),
+        questionId ? fetchAnswers(sessionId, questionId) : Promise.resolve({ data: null }),
       ])
       if (cancelled) return
       if (s) setSession((prev) => (prev && prev.status === s.status && prev.current_index === s.current_index ? prev : s))
       if (ps) setPlayers(ps)
-      if (as) setAnswers(as)
+      if (as) setAnswers((prev) => mergeById(prev, as))
     }
 
     const channel = supabase
@@ -135,37 +179,29 @@ export default function Host({ user }) {
     let cancelled = false
     async function refresh() {
       if (['reveal', 'leaderboard', 'finished'].includes(session.status)) {
-        const { data } = await supabase
-          .from('players')
-          .select('*')
-          .eq('session_id', sessionId)
-          .order('score', { ascending: false })
+        const { data } = await fetchPlayers(sessionId, 'score', false)
         if (!cancelled && data) setPlayers(data)
       }
-      if (session.status === 'finished') {
-        const { data } = await supabase.from('answers').select('*').eq('session_id', sessionId)
-        if (!cancelled && data) setAnswers(data)
+      // the survey and live summaries read every answer, one question at a
+      // time; a scored quiz ends on its podium and needs none of them
+      if (session.status === 'finished' && !scored) {
+        const wanted = survey ? questions : questions.filter((q) => LIVE_BAR_TYPES.includes(q.qtype))
+        const results = await Promise.all(wanted.map((q) => fetchAnswers(sessionId, q.id)))
+        if (!cancelled) setAnswers((prev) => mergeById(prev, results.flatMap((r) => r.data || [])))
       }
       if (['question', 'reveal'].includes(session.status) && currentQuestion) {
-        const { data } = await supabase
-          .from('answers')
-          .select('*')
-          .eq('session_id', sessionId)
-          .eq('question_id', currentQuestion.id)
-        if (!cancelled && data) {
-          setAnswers((prev) => {
-            const known = new Set(prev.map((a) => a.id))
-            return [...prev, ...data.filter((a) => !known.has(a.id))]
-          })
-        }
+        const { data } = await fetchAnswers(sessionId, currentQuestion.id)
+        if (!cancelled && data) setAnswers((prev) => mergeById(prev, data))
       }
     }
     refresh()
     return () => { cancelled = true }
     // currentQuestion is part of the key: on a host refresh mid-question the
     // session arrives before the questions, so without it the answers for the
-    // open question are never fetched and the screen shows "answered: 0"
-  }, [session?.status, session?.current_index, currentQuestion?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+    // open question are never fetched and the screen shows "answered: 0".
+    // scored and the question count join it for the summary, which needs the
+    // quiz and its questions to know what to read
+  }, [session?.status, session?.current_index, currentQuestion?.id, scored, questions.length]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const currentAnswers = useMemo(
     () => (currentQuestion ? answers.filter((a) => a.question_id === currentQuestion.id) : []),
@@ -242,6 +278,20 @@ export default function Host({ user }) {
     (_, i) => currentAnswers.filter((a) => a.answer_index === i).length
   )
   const maxOptionCount = Math.max(1, ...optionCounts)
+  const optionLabels = (currentQuestion?.options || []).map((_, i) => optionLabel(currentQuestion, i, t))
+  const optionColors = (currentQuestion?.options || []).map((_, i) => optionColor(currentQuestion, i))
+
+  // live mode: the projector shows results rising while the question is open
+  // (never which answer is right), and reveals with a single answer slide
+  const liveBars = live && LIVE_BAR_TYPES.includes(currentQuestion?.qtype)
+  const answerSlide = live && ANSWER_SLIDE_TYPES.includes(currentQuestion?.qtype)
+  const share = answerSlide ? correctShare(optionCounts, currentQuestion.correct_index) : null
+  const answerText = answerSlide ? optionLabel(currentQuestion, currentQuestion.correct_index, t) : ''
+  // a long answer steps down in size so the slide still fits on one screen
+  const answerLength = answerText.length > 28 ? ' longer' : answerText.length > 12 ? ' long' : ''
+  // and so does a long explanation, never below the 24px floor
+  const explanationLength = (currentQuestion?.explanation || '').length
+  const explanationSize = explanationLength > 260 ? ' longer' : explanationLength > 120 ? ' long' : ''
 
   const scale = currentQuestion?.qtype === 'scale' ? currentQuestion.meta : null
   const scalePointList = scale ? scalePoints(scale) : []
@@ -264,14 +314,14 @@ export default function Host({ user }) {
     if (!isHost) return null
     return (
       <div className="row center-row">
-        {!survey && (
+        {scored && (
           <button className="btn light xl" onClick={() => setStatus('leaderboard')}>
             {t('טבלת המובילים')}
           </button>
         )}
         {isLast ? (
           <button className="btn primary xl" onClick={() => setStatus('finished')}>
-            {survey ? t('לסיכום הסקר') : t('לתוצאות הסופיות')}
+            {survey ? t('לסיכום הסקר') : live ? t('לסיכום החידון') : t('לתוצאות הסופיות')}
           </button>
         ) : (
           <button className="btn primary xl" onClick={() => startQuestion(session.current_index + 1)}>
@@ -302,7 +352,7 @@ export default function Host({ user }) {
   }
 
   return (
-    <div className="stage">
+    <div className={`stage${live ? ' live' : ''}`}>
       {error && <div className="error-box floating">{error}</div>}
 
       {session.status === 'lobby' && (
@@ -310,13 +360,35 @@ export default function Host({ user }) {
           {quiz.logo_url && <img className="client-logo" src={quiz.logo_url} alt={t('לוגו הלקוח')} />}
           <h1 className="stage-title">{quiz.title}</h1>
           {quiz.subtitle && <h2 className="stage-subtitle">{quiz.subtitle}</h2>}
-          <div className="pin-banner big glow">
-            {t('קוד הצטרפות:')} <span className="pin">{session.pin}</span>
-          </div>
-          <p className="join-url" dir="ltr">{playLink(session.pin)}</p>
-          {qr && <img className="qr-big" src={qr} alt={t('קוד QR להצטרפות')} />}
-          <h3>{t('משתתפים ({count})', { count: players.length })}</h3>
-          {teamsOn ? (
+          {anonymous ? (
+            // no names in anonymous mode: the join code and the QR side by
+            // side, and one count the whole room can read
+            <div className="lobby-join">
+              <div className="lobby-join-info">
+                <div className="pin-banner big glow">
+                  {t('קוד הצטרפות:')} <span className="pin">{session.pin}</span>
+                </div>
+                <p className="join-url" dir="ltr">{playLink(session.pin)}</p>
+                <div className="join-counter">
+                  <span className="join-counter-value" key={players.length}>{players.length}</span>
+                  <span className="join-counter-label">
+                    {players.length === 1 ? t('משתתף הצטרף') : t('משתתפים הצטרפו')}
+                  </span>
+                </div>
+              </div>
+              {qr && <img className="qr-big" src={qr} alt={t('קוד QR להצטרפות')} />}
+            </div>
+          ) : (
+            <>
+              <div className="pin-banner big glow">
+                {t('קוד הצטרפות:')} <span className="pin">{session.pin}</span>
+              </div>
+              <p className="join-url" dir="ltr">{playLink(session.pin)}</p>
+              {qr && <img className="qr-big" src={qr} alt={t('קוד QR להצטרפות')} />}
+              <h3>{t('משתתפים ({count})', { count: players.length })}</h3>
+            </>
+          )}
+          {anonymous ? null : teamsOn ? (
             <div className="team-lobby">
               {quiz.teams.map((t, ti) => {
                 const members = players.filter((p) => p.team === t)
@@ -369,12 +441,23 @@ export default function Host({ user }) {
           )}
           <h1 className="stage-title">{currentQuestion.text}</h1>
 
-          {(currentQuestion.qtype === 'multiple_choice' || currentQuestion.qtype === 'poll') && (
+          {liveBars ? (
+            // the chart stays mounted for the whole question, so each answer
+            // eases the bars up instead of redrawing them; no correctIndex,
+            // and colours by position only, so nothing hints at the answer
+            <PollChart
+              live
+              options={optionLabels}
+              counts={optionCounts}
+              colorIndexes={optionColors}
+              reference={false}
+            />
+          ) : (hasCorrectOption(currentQuestion.qtype) || currentQuestion.qtype === 'poll') && (
             <div className={`options-grid${currentQuestion.options.length > 4 ? ' many' : ''}`}>
-              {currentQuestion.options.map((opt, i) => (
-                <div className={`option-tile color-${i}`} style={{ '--i': i }} key={i}>
-                  <span className="shape">{OPTION_SHAPES[i]}</span>
-                  <span>{opt}</span>
+              {currentQuestion.options.map((_, i) => (
+                <div className={`option-tile color-${optionColor(currentQuestion, i)}`} style={{ '--i': i }} key={i}>
+                  <span className="shape">{OPTION_SHAPES[optionColor(currentQuestion, i)]}</span>
+                  <span>{optionLabel(currentQuestion, i, t)}</span>
                 </div>
               ))}
             </div>
@@ -424,22 +507,61 @@ export default function Host({ user }) {
         </div>
       )}
 
-      {session.status === 'reveal' && currentQuestion && (
+      {session.status === 'reveal' && currentQuestion && answerSlide && (
+        <div className="stage-inner wide answer-slide" key={`r-${session.current_index}`}>
+          <p className="answer-question">{currentQuestion.text}</p>
+          <div className="answer-panel">
+            <span className="answer-label">{t('התשובה הנכונה')}</span>
+            <span className={`answer-text${answerLength}`}>{answerText}</span>
+          </div>
+          <div
+            className={`answer-body${currentQuestion.explanation ? ' with-explanation' : ''}${currentQuestion.options.length > 4 ? ' many' : ''}`}
+          >
+            {currentQuestion.explanation && (
+              <div className={`answer-explanation${explanationSize}`}>
+                <Explanation text={currentQuestion.explanation} />
+              </div>
+            )}
+            <div className="answer-results">
+              {share ? (
+                <div className="answer-stat">
+                  <span className="answer-stat-value">{t('{percent}% ענו נכון', { percent: share.percent })}</span>
+                  <span className="answer-stat-detail">
+                    {t('{correct} מתוך {total} משתתפים', { correct: share.correct, total: share.total })}
+                  </span>
+                </div>
+              ) : (
+                <p className="answer-stat-detail">{t('לא התקבלו תשובות לשאלה זו.')}</p>
+              )}
+              <PollChart
+                options={optionLabels}
+                counts={optionCounts}
+                correctIndex={currentQuestion.correct_index}
+                colorIndexes={optionColors}
+                reference={false}
+              />
+            </div>
+          </div>
+          {nextButtons()}
+        </div>
+      )}
+
+      {session.status === 'reveal' && currentQuestion && !answerSlide && (
         <div className="stage-inner" key={`r-${session.current_index}`}>
           <h1 className="stage-title">{currentQuestion.text}</h1>
 
-          {currentQuestion.qtype === 'multiple_choice' && (
+          {hasCorrectOption(currentQuestion.qtype) && (
             <div className={`options-grid${currentQuestion.options.length > 4 ? ' many' : ''}`}>
-              {currentQuestion.options.map((opt, i) => {
+              {currentQuestion.options.map((_, i) => {
                 const correct = i === currentQuestion.correct_index
                 return (
                   <div
-                    className={`option-tile color-${i} ${correct ? 'correct' : 'dimmed'}`}
+                    className={`option-tile color-${optionColor(currentQuestion, i)} ${correct ? 'correct' : 'dimmed'}`}
                     style={{ '--i': i }}
                     key={i}
                   >
-                    <span className="shape">{OPTION_SHAPES[i]}</span>
-                    <span>{opt} {correct && '✓'}</span>
+                    <span className="shape">{OPTION_SHAPES[optionColor(currentQuestion, i)]}</span>
+                    <span>{optionLabel(currentQuestion, i, t)} {correct && '✓'}</span>
                     <div className="bar-track">
                       <div className="bar" style={{ width: `${(optionCounts[i] / maxOptionCount) * 100}%` }} />
                     </div>
@@ -522,7 +644,16 @@ export default function Host({ user }) {
         </div>
       )}
 
-      {session.status === 'leaderboard' && (
+      {/* an unscored quiz never opens the leaderboard; should the state be
+          reached anyway, no names or scores are shown - only the way on */}
+      {session.status === 'leaderboard' && !scored && (
+        <div className="stage-inner" key={`l-${session.current_index}`}>
+          <h1 className="stage-title">{quiz.title}</h1>
+          {nextButtons()}
+        </div>
+      )}
+
+      {session.status === 'leaderboard' && scored && (
         <div className="stage-inner" key={`l-${session.current_index}`}>
           <h1 className="stage-title">{teamsOn ? t('מצב הקבוצות') : t('טבלת המובילים')}</h1>
           {teamScoreBoard()}
@@ -561,7 +692,19 @@ export default function Host({ user }) {
         </div>
       )}
 
-      {session.status === 'finished' && !survey && (
+      {session.status === 'finished' && live && (
+        <div className="stage-inner wide" key="finished-live">
+          {quiz.logo_url && <img className="client-logo small" src={quiz.logo_url} alt={t('לוגו הלקוח')} />}
+          <h1 className="stage-title">⚡ {quiz.title}</h1>
+          <h2 className="stage-subtitle">{t('סיכום החידון')}</h2>
+          <LiveConclusion questions={questions} answers={answers} participants={players.length} />
+          {isHost && (
+            <button className="btn ghost light-ghost" onClick={() => navigate('/')}>{t('חזרה לספרייה')}</button>
+          )}
+        </div>
+      )}
+
+      {session.status === 'finished' && scored && (
         <div className="stage-inner" key="finished">
           <Confetti />
           {quiz.logo_url && <img className="client-logo small" src={quiz.logo_url} alt={t('לוגו הלקוח')} />}

@@ -19,8 +19,31 @@ const TOP_PAD = 4
 // something across answers that have an order, so a survey's choice
 // questions - where the options are just different answers, in no
 // particular order - are drawn without it.
-export default function PollChart({ options, counts, scale = false, reference: withReference = true }) {
+//
+// `correctIndex` marks the right answer once it is revealed: its bar turns
+// green with a ✓ under it and the others are muted. Leave it null while a
+// question is open, or the chart gives the answer away.
+//
+// `colorIndexes` replaces the colour (and shape) of each bar, so a chart
+// matches the tiles a phone shows (true/false answers are blue and orange,
+// not the first two option colours).
+//
+// `live` is for a chart that stays mounted while answers stream in: the bars
+// ease to each new height instead of jumping, since the rise animation only
+// plays once, on mount.
+export default function PollChart({
+  options,
+  counts,
+  scale = false,
+  reference: withReference = true,
+  correctIndex = null,
+  colorIndexes = null,
+  live = false,
+}) {
   const { t } = useI18n()
+  const colorOf = (i) => colorIndexes?.[i] ?? i
+  const judged = correctIndex != null
+  const verdict = (i) => (judged ? (i === correctIndex ? ' correct' : ' wrong') : '')
   const total = counts.reduce((sum, c) => sum + c, 0)
   const reference = withReference ? normalReference(counts) : null
   const top = Math.max(1, ...counts, reference?.peak ?? 0)
@@ -42,14 +65,14 @@ export default function PollChart({ options, counts, scale = false, reference: w
     : null
 
   return (
-    <div className="poll-chart" style={{ '--bars': options.length }}>
+    <div className={`poll-chart${live ? ' live' : ''}`} style={{ '--bars': options.length }}>
       <div className="poll-plot">
         <div className="poll-cols">
           {options.map((opt, i) => {
             const count = counts[i] || 0
             return (
               <div
-                className="poll-col"
+                className={`poll-col${verdict(i)}`}
                 style={{ '--i': i }}
                 key={i}
                 title={`${opt} - ${t('{count} תשובות', { count })}`}
@@ -59,7 +82,7 @@ export default function PollChart({ options, counts, scale = false, reference: w
                   <span className="poll-count">{count}</span>
                 </span>
                 <div
-                  className={`poll-bar ${scale ? 'scale' : `color-${i}`}`}
+                  className={`poll-bar ${scale ? 'scale' : `color-${colorOf(i)}`}${verdict(i)}`}
                   style={{ height: `${plotHeight(count)}%` }}
                 />
               </div>
@@ -77,9 +100,11 @@ export default function PollChart({ options, counts, scale = false, reference: w
 
       <div className="poll-labels">
         {options.map((opt, i) => (
-          <div className="poll-label" style={{ '--i': i }} key={i}>
-            {!scale && <span className={`poll-shape color-${i}`}>{OPTION_SHAPES[i]}</span>}
-            <span className={scale ? 'poll-text scale-value' : 'poll-text'}>{opt}</span>
+          <div className={`poll-label${verdict(i)}`} style={{ '--i': i }} key={i}>
+            {!scale && <span className={`poll-shape color-${colorOf(i)}`}>{OPTION_SHAPES[colorOf(i)]}</span>}
+            <span className={scale ? 'poll-text scale-value' : 'poll-text'}>
+              {opt}{judged && i === correctIndex && ' ✓'}
+            </span>
           </div>
         ))}
       </div>
