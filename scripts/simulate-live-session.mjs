@@ -41,6 +41,7 @@ import readline from 'node:readline/promises'
 import { fileURLToPath } from 'node:url'
 import { createClient } from '@supabase/supabase-js'
 import { followSession, reconnectAfterMs } from '../src/lib/liveSync.js'
+import { isMultiSelect, wordEntries } from '../src/lib/multiAnswer.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const QUIZ_FIELDS = 'kind, scored, anonymous, teams_enabled, team_mode, teams, title'
@@ -106,16 +107,27 @@ function randomAnswer(q) {
   switch (q.qtype) {
     case 'true_false':
       return { answer_index: pick(2) }
-    case 'multiple_choice':
     case 'poll':
+      if (isMultiSelect(q)) {
+        // one or more distinct options, as the phone sends them
+        const n = q.options?.length || 2
+        const chosen = shuffled(n).slice(0, 1 + pick(n))
+        return { answer: { indexes: chosen.sort((a, b) => a - b) } }
+      }
+      return { answer_index: pick(q.options?.length || 2) }
+    case 'multiple_choice':
       return { answer_index: pick(q.options?.length || 2) }
     case 'scale': {
       const min = Number(q.meta?.min ?? 1)
       const max = Number(q.meta?.max ?? 5)
       return { answer_index: min + pick(max - min + 1) }
     }
-    case 'word_cloud':
-      return { answer: { text: WORDS[pick(WORDS.length)] } }
+    case 'word_cloud': {
+      const max = wordEntries(q)
+      if (max === 1) return { answer: { text: WORDS[pick(WORDS.length)] } }
+      const texts = shuffled(WORDS.length).slice(0, 1 + pick(max)).map((i) => WORDS[i])
+      return { answer: { texts } }
+    }
     case 'ranking':
       return { answer: { order: shuffled(q.options?.length || 0) } }
     case 'hotspot':

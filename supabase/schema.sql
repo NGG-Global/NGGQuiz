@@ -52,7 +52,9 @@ create table if not exists public.questions (
                                    -- true_false: always ['נכון', 'לא נכון']
   correct_index int,               -- multiple_choice / true_false only
   meta jsonb,                      -- hotspot: {image_url, x, y} in percent coordinates;
-                                   -- scale: {min, max, low_label, high_label}
+                                   -- scale: {min, max, low_label, high_label};
+                                   -- poll: {multi_select} - several options allowed;
+                                   -- word_cloud: {max_entries} - words per player
   explanation text,                -- optional, shown when the answer is revealed
   time_limit int                   -- optional timer in seconds; null = no limit
 );
@@ -86,7 +88,8 @@ create table if not exists public.answers (
   player_id uuid not null references public.players(id) on delete cascade,
   answer_index int,                -- multiple_choice / poll: the chosen option;
                                    -- scale: the chosen value itself (min..max)
-  answer jsonb,                    -- word_cloud: {text}; ranking: {order}; hotspot: {x, y}
+  answer jsonb,                    -- word_cloud: {text} or {texts}; poll with several
+                                   -- options: {indexes}; ranking: {order}; hotspot: {x, y}
   is_correct boolean not null default false,
   points int not null default 0,
   answered_at timestamptz not null default now(),
@@ -182,7 +185,9 @@ end $$;
 --   multiple_choice / true_false: full base when correct, 0 otherwise
 --   ranking:         base scaled by Kendall-tau similarity
 --   hotspot:         base scaled by distance from the target
---   poll/word_cloud: participation only, no points
+--   poll/word_cloud: participation only, no points; a poll may take
+--                    several options and a word cloud several words
+--                    when the question allows it (see questions.meta)
 -- A quiz with scored = false (live mode) still marks answers right or
 -- wrong, but every answer earns 0 points.
 -- ------------------------------------------------------------
@@ -279,8 +284,49 @@ begin
     new.is_correct := false;
     new.points := 0;
 
+  elsif q.qtype = 'poll' then
+    -- no right answer and no points, but every chosen option has to exist:
+    -- one option, or - when the author allowed it (meta.multi_select) -
+    -- several in answer.indexes, none of them twice
+    n := coalesce(jsonb_array_length(q.options), 0);
+    if jsonb_typeof(new.answer -> 'indexes') = 'array' then
+      arr := new.answer -> 'indexes';
+      if coalesce((q.meta ->> 'multi_select')::boolean, false) is not true
+         or jsonb_array_length(arr) = 0
+         or jsonb_array_length(arr) > n
+         or exists (select 1 from jsonb_array_elements(arr) e
+                     where (e #>> '{}') !~ '^[0-9]+$' or (e #>> '{}')::int >= n)
+         or (select count(distinct e) from jsonb_array_elements(arr) e) <> jsonb_array_length(arr) then
+        raise exception 'invalid poll answer';
+      end if;
+      new.answer_index := null;
+    elsif new.answer_index is null or new.answer_index < 0 or new.answer_index >= n then
+      raise exception 'invalid poll answer';
+    end if;
+    new.is_correct := false;
+    new.points := 0;
+
+  elsif q.qtype = 'word_cloud' then
+    -- short words only, and no more of them than the author allowed
+    -- (meta.max_entries; one when unset)
+    if jsonb_typeof(new.answer -> 'texts') = 'array' then
+      arr := new.answer -> 'texts';
+      n := least(greatest(coalesce((q.meta ->> 'max_entries')::int, 1), 1), 10);
+      if jsonb_array_length(arr) = 0
+         or jsonb_array_length(arr) > n
+         or exists (select 1 from jsonb_array_elements(arr) e
+                     where jsonb_typeof(e) <> 'string'
+                        or char_length(btrim(e #>> '{}')) not between 1 and 60) then
+        raise exception 'invalid word cloud answer';
+      end if;
+    elsif jsonb_typeof(new.answer -> 'text') is distinct from 'string'
+          or char_length(btrim(new.answer ->> 'text')) not between 1 and 60 then
+      raise exception 'invalid word cloud answer';
+    end if;
+    new.is_correct := false;
+    new.points := 0;
+
   else
-    -- poll / word_cloud: no right answer, no points
     new.is_correct := false;
     new.points := 0;
   end if;

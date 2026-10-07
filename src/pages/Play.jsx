@@ -8,6 +8,7 @@ import { followSession, newerSession, withTimeout } from '../lib/liveSync'
 import { loadSavedPlayer, savePlayer, forgetPlayer, newPlayerId } from '../lib/playerStore'
 import { TEAM_COLORS, teamColor, shuffled, hasCorrectOption } from '../lib/questionTypes'
 import { quizFlags } from '../lib/quizMode'
+import { isMultiSelect, wordEntries, cleanWords, MAX_WORD_LENGTH } from '../lib/multiAnswer'
 import { useI18n } from '../lib/i18n.js'
 import LanguageToggle from '../components/LanguageToggle.jsx'
 import Countdown, { useSecondsLeft } from '../components/Countdown.jsx'
@@ -125,6 +126,9 @@ export default function Play() {
 
   // per-question input state
   const [cloudText, setCloudText] = useState('')
+  const [words, setWords] = useState([]) // a word cloud that takes several words
+  const [wordNote, setWordNote] = useState('') // why the last word was not added
+  const [picked, setPicked] = useState([]) // a poll that takes several options
   const [rankOrder, setRankOrder] = useState([]) // original indices in chosen order
   const [tapPos, setTapPos] = useState(null)
 
@@ -284,6 +288,9 @@ export default function Play() {
     setSending(null)
     setError('')
     setCloudText('')
+    setWords([])
+    setWordNote('')
+    setPicked([])
     setTapPos(null)
     if (currentQuestion.qtype === 'ranking') {
       setRankOrder(shuffled(currentQuestion.options?.length || 0))
@@ -576,6 +583,31 @@ export default function Play() {
     }
   }
 
+  function togglePicked(index) {
+    setPicked((list) => (list.includes(index) ? list.filter((i) => i !== index) : [...list, index]))
+  }
+
+  // adds the typed word to the list; the same word twice is kept once
+  function addWord(max) {
+    const next = cleanWords([...words, cloudText], max)
+    if (next.length === words.length && cloudText.trim()) {
+      setWordNote(words.length >= max
+        ? t('אפשר לשלוח עד {count} מילים.', { count: max })
+        : t('המילה הזו כבר ברשימה.'))
+      return
+    }
+    setWordNote('')
+    setWords(next)
+    setCloudText('')
+  }
+
+  // a word still in the box when the player presses send goes with the rest,
+  // rather than being silently left behind
+  function sendWords(max) {
+    const all = cleanWords([...words, cloudText], max)
+    if (all.length) submitAnswer({ answer: { texts: all } })
+  }
+
   function moveRankItem(pos, delta) {
     setRankOrder((order) => {
       const target = pos + delta
@@ -759,7 +791,43 @@ export default function Play() {
               <h2 className="player-question">{currentQuestion.text}</h2>
               {sending && <p className="stage-subtitle sending-note">{t('שולחים את התשובה...')}</p>}
 
-              {(hasCorrectOption(currentQuestion.qtype) || currentQuestion.qtype === 'poll') && (
+              {isMultiSelect(currentQuestion) && (
+                <div className="multi-play">
+                  <p className="multi-hint">{t('אפשר לבחור יותר מאפשרות אחת')}</p>
+                  <div
+                    className={`options-grid player multi${currentQuestion.options.length > 4 ? ' many' : ''}`}
+                    role="group"
+                  >
+                    {currentQuestion.options.map((_, i) => {
+                      const on = picked.includes(i)
+                      return (
+                        <button
+                          className={`option-tile clickable color-${optionColor(currentQuestion, i)}${on ? ' picked' : ''}`}
+                          style={{ '--i': i }}
+                          key={i}
+                          aria-pressed={on}
+                          disabled={Boolean(sending)}
+                          onClick={() => togglePicked(i)}
+                        >
+                          <span className="pick-box" aria-hidden="true">{on ? '✓' : ''}</span>
+                          <span>{optionLabel(currentQuestion, i, t)}</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                  <button
+                    className="btn light xl multi-submit"
+                    disabled={!picked.length || Boolean(sending)}
+                    onClick={() => submitAnswer({ answer: { indexes: [...picked].sort((a, b) => a - b) } })}
+                  >
+                    {picked.length
+                      ? t('שליחת התשובה ({count} נבחרו)', { count: picked.length })
+                      : t('בחרו אפשרות אחת או יותר')}
+                  </button>
+                </div>
+              )}
+
+              {(hasCorrectOption(currentQuestion.qtype) || currentQuestion.qtype === 'poll') && !isMultiSelect(currentQuestion) && (
                 <div
                   className={`options-grid player${currentQuestion.qtype === 'true_false' ? ' true-false' : ''}${currentQuestion.options.length > 4 ? ' many' : ''}`}
                 >
@@ -788,7 +856,70 @@ export default function Play() {
                 </div>
               )}
 
-              {currentQuestion.qtype === 'word_cloud' && (
+              {currentQuestion.qtype === 'word_cloud' && wordEntries(currentQuestion) > 1 && (() => {
+                const max = wordEntries(currentQuestion)
+                const full = words.length >= max
+                return (
+                  <div className="cloud-form multi">
+                    <p className="multi-hint">
+                      {t('אפשר לשלוח עד {count} מילים', { count: max })}
+                      <span className="word-count">{words.length}/{max}</span>
+                    </p>
+                    {words.length > 0 && (
+                      <ul className="word-chips">
+                        {words.map((w) => (
+                          <li className="word-chip" key={w.toLowerCase()}>
+                            <span>{w}</span>
+                            <button
+                              type="button"
+                              aria-label={t('הסרת "{word}"', { word: w })}
+                              disabled={Boolean(sending)}
+                              onClick={() => setWords((list) => list.filter((x) => x !== w))}
+                            >
+                              ✕
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {!full && (
+                      <form
+                        className="word-add"
+                        onSubmit={(e) => {
+                          e.preventDefault()
+                          addWord(max)
+                        }}
+                      >
+                        <input
+                          value={cloudText}
+                          onChange={(e) => {
+                            setCloudText(e.target.value)
+                            setWordNote('')
+                          }}
+                          aria-describedby={wordNote ? 'word-note' : undefined}
+                          maxLength={MAX_WORD_LENGTH}
+                          placeholder={words.length ? t('מילה נוספת...') : t('הקלידו תשובה קצרה...')}
+                          enterKeyHint="enter"
+                          autoFocus
+                        />
+                        <button className="btn ghost light-ghost" disabled={!cloudText.trim() || Boolean(sending)}>
+                          {t('+ הוספה')}
+                        </button>
+                      </form>
+                    )}
+                    {wordNote && <p className="word-note" id="word-note" role="status">{wordNote}</p>}
+                    <button
+                      className="btn light xl"
+                      disabled={(!words.length && !cloudText.trim()) || Boolean(sending)}
+                      onClick={() => sendWords(max)}
+                    >
+                      {t('שליחה ☁️')}
+                    </button>
+                  </div>
+                )
+              })()}
+
+              {currentQuestion.qtype === 'word_cloud' && wordEntries(currentQuestion) === 1 && (
                 <form
                   className="cloud-form"
                   onSubmit={(e) => {

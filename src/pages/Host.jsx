@@ -21,6 +21,7 @@ import { newerSession, withTimeout } from '../lib/liveSync'
 import { TEAM_COLORS, kendallSimilarity, hasCorrectOption } from '../lib/questionTypes'
 import { quizFlags, LIVE_BAR_TYPES, ANSWER_SLIDE_TYPES } from '../lib/quizMode'
 import { fetchAll, mergeById, upsertById } from '../lib/fetchAll'
+import { isMultiSelect, wordEntries, answerTexts, optionCounts as countOptions } from '../lib/multiAnswer'
 import { useI18n } from '../lib/i18n.js'
 
 const READ_TIMEOUT_MS = 10000
@@ -414,15 +415,18 @@ export default function Host({ user }) {
   }
 
   const isLast = session.current_index >= questions.length - 1
-  const cloudTexts = currentAnswers.map((a) => a.answer?.text).filter(Boolean)
+  const cloudTexts = currentAnswers.flatMap(answerTexts)
+  // a poll that takes several options: its percentages are of the people who
+  // answered, so they can add up to more than 100%
+  const multiSelect = isMultiSelect(currentQuestion)
+  const respondents = multiSelect ? currentAnswers.length : undefined
+  const maxWords = wordEntries(currentQuestion)
 
   const neutralOrder = currentQuestion?.qtype === 'ranking'
     ? [...(currentQuestion.options || [])].sort((a, b) => String(a).localeCompare(String(b), 'he'))
     : []
 
-  const optionCounts = (currentQuestion?.options || []).map(
-    (_, i) => currentAnswers.filter((a) => a.answer_index === i).length
-  )
+  const optionCounts = countOptions(currentAnswers, (currentQuestion?.options || []).length)
   const maxOptionCount = Math.max(1, ...optionCounts)
   const optionLabels = (currentQuestion?.options || []).map((_, i) => optionLabel(currentQuestion, i, t))
   const optionColors = (currentQuestion?.options || []).map((_, i) => optionColor(currentQuestion, i))
@@ -586,6 +590,7 @@ export default function Host({ user }) {
             </div>
           )}
           <h1 className="stage-title">{currentQuestion.text}</h1>
+          {multiSelect && <p className="stage-subtitle multi-note">{t('☑️ אפשר לבחור יותר מאפשרות אחת')}</p>}
 
           {liveBars ? (
             // the chart stays mounted for the whole question, so each answer
@@ -597,6 +602,7 @@ export default function Host({ user }) {
               counts={optionCounts}
               colorIndexes={optionColors}
               reference={false}
+              respondents={respondents}
             />
           ) : (hasCorrectOption(currentQuestion.qtype) || currentQuestion.qtype === 'poll') && (
             <div className={`options-grid${currentQuestion.options.length > 4 ? ' many' : ''}`}>
@@ -618,7 +624,11 @@ export default function Host({ user }) {
 
           {currentQuestion.qtype === 'word_cloud' && (
             <>
-              <p className="stage-subtitle">{t('☁️ ענו מהטלפון - הענן נבנה בזמן אמת')}</p>
+              <p className="stage-subtitle">
+                {maxWords > 1
+                  ? t('☁️ ענו מהטלפון, עד {count} מילים - הענן נבנה בזמן אמת', { count: maxWords })
+                  : t('☁️ ענו מהטלפון - הענן נבנה בזמן אמת')}
+              </p>
               <WordCloud texts={cloudTexts} />
             </>
           )}
@@ -722,7 +732,8 @@ export default function Host({ user }) {
             <PollChart
               options={currentQuestion.options || []}
               counts={optionCounts}
-              reference={!survey}
+              reference={!survey && !multiSelect}
+              respondents={respondents}
             />
           )}
 
