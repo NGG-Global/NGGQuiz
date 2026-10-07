@@ -3,10 +3,12 @@
 //
 // Joins N anonymous players to a running session through the public API,
 // the way a phone does - a players row with a hidden nickname, the quiz and
-// question reads the phone makes on joining, a Realtime channel per player
-// on the session row, and the jittered safety poll - then answers each
-// question as it opens, after a random, human-like delay. The projector
-// shows the room filling up and the bars rising, as it would in the hall.
+// question reads the phone makes on joining, and the phone's own session
+// follower (src/lib/liveSync.js: a Realtime channel per player on the
+// session row, the resync on (re)subscribe and the paced safety poll) -
+// then answers each question as it opens, after a random, human-like
+// delay. The projector shows the room filling up and the bars rising, as
+// it would in the hall.
 //
 // RUN IT ONLY AGAINST A THROWAWAY SESSION. Every simulated player and every
 // answer is a real row in the database. Create a separate test quiz, start
@@ -38,6 +40,7 @@ import path from 'node:path'
 import readline from 'node:readline/promises'
 import { fileURLToPath } from 'node:url'
 import { createClient } from '@supabase/supabase-js'
+import { followSession, reconnectAfterMs } from '../src/lib/liveSync.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const QUIZ_FIELDS = 'kind, scored, anonymous, teams_enabled, team_mode, teams, title'
@@ -141,7 +144,7 @@ const stats = {
   answerMs: [],
   answered: new Map(), // question index -> answers accepted
   answerErrors: new Map(), // message -> count
-  seen: new Map(), // "status:index" -> {first, last, players, realtime, poll}
+  seen: new Map(), // "status:index" -> {first, last, players, realtime, http}
 }
 
 function countError(map, message) {
@@ -149,15 +152,16 @@ function countError(map, message) {
 }
 
 // how quickly one host action reached every phone, and which path brought
-// it there first (only a phone's first sighting counts)
+// it there first (only a phone's first sighting counts): Realtime, or one
+// of the follower's HTTP reads (poll, resync on subscribe)
 function observe(session, via, phone) {
   const key = `${session.status}:${session.current_index}`
   const now = Date.now()
-  const entry = stats.seen.get(key) || { first: now, last: now, players: new Set(), realtime: 0, poll: 0 }
+  const entry = stats.seen.get(key) || { first: now, last: now, players: new Set(), realtime: 0, http: 0 }
   if (!entry.players.has(phone)) {
     entry.players.add(phone)
     entry.last = now
-    entry[via] += 1
+    entry[via === 'realtime' ? 'realtime' : 'http'] += 1
   }
   stats.seen.set(key, entry)
 }
@@ -169,18 +173,21 @@ class SimulatedPhone {
     this.answeredIndex = null
     this.scheduledIndex = null
     this.stopped = false
-    // one client per phone, so each holds its own Realtime connection
+    // one client per phone, so each holds its own Realtime connection, with
+    // the site's spread-out reconnect back-off
     this.client = createClient(ctx.url, ctx.key, {
       auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+      realtime: { reconnectAfterMs },
     })
   }
 
   async join() {
     const started = performance.now()
     for (let attempt = 0; attempt <= 3; attempt++) {
+      // the phone picks its player id, so a retried join finds its own row
       const { data, error } = await this.client
         .from('players')
-        .insert({ session_id: this.ctx.session.id, nickname: anonymousNickname(), team: null })
+        .insert({ id: crypto.randomUUID(), session_id: this.ctx.session.id, nickname: anonymousNickname(), team: null })
         .select()
         .single()
       if (!error) {
@@ -204,38 +211,19 @@ class SimulatedPhone {
     return false
   }
 
+  // the phone's follower, unchanged: Realtime on the session row, a read on
+  // every (re)subscription, and the paced safety poll
   listen() {
-    const sessionId = this.ctx.session.id
-    this.channel = this.client
-      .channel(`play-${sessionId}`)
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'game_sessions', filter: `id=eq.${sessionId}` },
-        (payload) => this.onSession(payload.new, 'realtime')
-      )
-      .subscribe((status) => {
-        if (status === 'SUBSCRIBED') {
-          stats.subscribed += 1
-          this.sync()
-        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-          stats.channelProblems += 1
-        }
-      })
-    this.schedulePoll()
-  }
-
-  // the phone's safety poll: about every 5 seconds, +/-20%, drawn each time
-  schedulePoll() {
-    this.poll = setTimeout(() => {
-      this.sync()
-      if (!this.stopped) this.schedulePoll()
-    }, 5000 * (0.8 + Math.random() * 0.4))
-  }
-
-  async sync() {
-    if (this.stopped) return
-    const { data } = await this.client.from('game_sessions').select('*').eq('id', this.ctx.session.id).single()
-    if (data) this.onSession(data, 'poll')
+    let wasHealthy = false
+    this.follower = followSession(this.client, this.ctx.session.id, {
+      label: 'play',
+      onState: (row, via) => this.onSession(row, via),
+      onHealth: (healthy) => {
+        if (healthy && !wasHealthy) stats.subscribed += 1
+        if (!healthy && wasHealthy) stats.channelProblems += 1
+        wasHealthy = healthy
+      },
+    })
   }
 
   onSession(session, via) {
@@ -279,7 +267,7 @@ class SimulatedPhone {
 
   async stop() {
     this.stopped = true
-    clearTimeout(this.poll)
+    this.follower?.stop()
     clearTimeout(this.answerTimer)
     await this.client.removeAllChannels()
   }
@@ -288,7 +276,7 @@ class SimulatedPhone {
 function printSummary(ctx) {
   console.log('\n--- summary ---')
   console.log(`players joined: ${stats.joined}/${ctx.players}${stats.joinFailed ? ` (${stats.joinFailed} failed)` : ''}`)
-  console.log(`realtime channels subscribed: ${stats.subscribed}${stats.channelProblems ? `, problems reported: ${stats.channelProblems}` : ''}`)
+  console.log(`realtime subscriptions: ${stats.subscribed}${stats.channelProblems ? `, drops reported: ${stats.channelProblems}` : ''}`)
   console.log(`join time  p50 ${percentile(stats.joinMs, 50)} ms, p95 ${percentile(stats.joinMs, 95)} ms`)
   console.log(`answer time p50 ${percentile(stats.answerMs, 50)} ms, p95 ${percentile(stats.answerMs, 95)} ms`)
   for (const [index, count] of [...stats.answered].sort((a, b) => a[0] - b[0])) {
@@ -296,7 +284,7 @@ function printSummary(ctx) {
   }
   for (const [key, entry] of stats.seen) {
     if (key.startsWith('lobby')) continue
-    console.log(`state ${key}: reached ${entry.players.size} phones within ${entry.last - entry.first} ms (first via realtime ${entry.realtime}, via poll ${entry.poll})`)
+    console.log(`state ${key}: reached ${entry.players.size} phones within ${entry.last - entry.first} ms (first via realtime ${entry.realtime}, via an HTTP read ${entry.http})`)
   }
   for (const [message, count] of stats.answerErrors) console.log(`error x${count}: ${message}`)
 }

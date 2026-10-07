@@ -16,23 +16,42 @@ import { scaleCounts, scalePoints } from '../lib/survey'
 import { scaleSummary, correctShare } from '../lib/stats'
 import { OPTION_SHAPES, optionColor, optionLabel } from '../lib/optionStyle'
 import { deadlineMs } from '../lib/timer'
+import { serverNow, syncServerClock } from '../lib/serverClock'
+import { newerSession, withTimeout } from '../lib/liveSync'
 import { TEAM_COLORS, kendallSimilarity, hasCorrectOption } from '../lib/questionTypes'
 import { quizFlags, LIVE_BAR_TYPES, ANSWER_SLIDE_TYPES } from '../lib/quizMode'
-import { fetchAll, mergeById } from '../lib/fetchAll'
+import { fetchAll, mergeById, upsertById } from '../lib/fetchAll'
 import { useI18n } from '../lib/i18n.js'
+
+const READ_TIMEOUT_MS = 10000
+const WRITE_TIMEOUT_MS = 10000
+// Realtime rows are gathered and applied together at most this often: a
+// hall answering at once sends hundreds of inserts a second, and one render
+// per insert would make the bars stutter on the projector
+const FLUSH_MS = 200
+// the projector's safety-net resync: slower while the channel is up, faster
+// while it is down (each delay drawn within ±10%)
+const RESYNC_HEALTHY_MS = 10000
+const RESYNC_DEGRADED_MS = 4000
+
+// a failed request with no database error code never reached the database
+const isNetworkError = (error) => Boolean(error) && !error.code
 
 // Every answer to one question, read past the API's 1,000-row cap. Ordered
 // by arrival, so an answer that lands mid-read joins the last page instead
 // of shifting the pages already read.
 function fetchAnswers(sessionId, questionId) {
   return fetchAll(() =>
-    supabase
-      .from('answers')
-      .select('*')
-      .eq('session_id', sessionId)
-      .eq('question_id', questionId)
-      .order('answered_at')
-      .order('id')
+    withTimeout(
+      supabase
+        .from('answers')
+        .select('*')
+        .eq('session_id', sessionId)
+        .eq('question_id', questionId)
+        .order('answered_at')
+        .order('id'),
+      READ_TIMEOUT_MS
+    )
   )
 }
 
@@ -40,13 +59,20 @@ function fetchAnswers(sessionId, questionId) {
 // the pages keep a stable order.
 function fetchPlayers(sessionId, column = 'joined_at', ascending = true) {
   return fetchAll(() =>
-    supabase
-      .from('players')
-      .select('*')
-      .eq('session_id', sessionId)
-      .order(column, { ascending })
-      .order('id')
+    withTimeout(
+      supabase
+        .from('players')
+        .select('*')
+        .eq('session_id', sessionId)
+        .order(column, { ascending })
+        .order('id'),
+      READ_TIMEOUT_MS
+    )
   )
+}
+
+function readSession(sessionId) {
+  return withTimeout(supabase.from('game_sessions').select('*').eq('id', sessionId).maybeSingle(), READ_TIMEOUT_MS)
 }
 
 export default function Host({ user }) {
@@ -61,6 +87,9 @@ export default function Host({ user }) {
   const [answers, setAnswers] = useState([])
   const [qr, setQr] = useState('')
   const [error, setError] = useState('')
+  const [acting, setActing] = useState(false) // a host action is on its way
+  const [clockReady, setClockReady] = useState(false)
+  const actingRef = useRef(false)
   const revealDone = useRef(null)
   const currentQuestionId = useRef(null) // read by the resync, which outlives renders
 
@@ -80,36 +109,53 @@ export default function Host({ user }) {
     currentQuestionId.current = currentQuestion?.id ?? null
   }, [currentQuestion?.id])
 
-  // initial load
+  // initial load. A projector refreshed on a weak venue network retries
+  // instead of sitting on a spinner; only a session that does not exist
+  // is reported as such
   useEffect(() => {
     let cancelled = false
-    async function load() {
-      const { data: s, error: sErr } = await supabase
-        .from('game_sessions')
-        .select('*')
-        .eq('id', sessionId)
-        .single()
+    let timer = null
+    // the projector's countdown and its automatic reveal run on the
+    // database clock, not on this machine's
+    syncServerClock(supabase).then(() => { if (!cancelled) setClockReady(true) })
+
+    async function load(attempt = 0) {
+      const retry = () => {
+        if (attempt >= 5) {
+          setError(t('אין כרגע חיבור לשרת. בדקו את החיבור לאינטרנט ונסו שוב.'))
+          return
+        }
+        timer = setTimeout(() => load(attempt + 1), 1000 * 2 ** attempt)
+      }
+      const { data: s, error: sErr } = await readSession(sessionId)
       if (cancelled) return
-      if (sErr || !s) {
+      if (sErr) return retry()
+      if (!s) {
         setError(t('המפגש לא נמצא.'))
         return
       }
-      setSession(s)
-      const [{ data: q }, { data: qs }, { data: ps }] = await Promise.all([
-        supabase.from('quizzes').select('*').eq('id', s.quiz_id).single(),
-        supabase.from('questions').select('*').eq('quiz_id', s.quiz_id).order('position'),
-        supabase.from('players').select('*').eq('session_id', sessionId).order('joined_at'),
+      setSession((prev) => newerSession(prev, s))
+      const [{ data: q }, { data: qs, error: qsErr }, { data: ps }] = await Promise.all([
+        withTimeout(supabase.from('quizzes').select('*').eq('id', s.quiz_id).maybeSingle(), READ_TIMEOUT_MS),
+        withTimeout(supabase.from('questions').select('*').eq('quiz_id', s.quiz_id).order('position'), READ_TIMEOUT_MS),
+        fetchPlayers(sessionId),
       ])
       if (cancelled) return
+      if (ps) setPlayers((prev) => upsertById(prev, ps))
+      if (!q || qsErr) return retry()
+      setError('')
       setQuiz(q)
       setQuestions(qs || [])
-      setPlayers(ps || [])
       QRCode.toDataURL(playLink(s.pin), { width: 320, margin: 1 })
         .then((url) => { if (!cancelled) setQr(url) })
         .catch(() => {})
     }
+
     load()
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
   }, [sessionId])
 
   // realtime subscriptions, plus a resync safety net - realtime events
@@ -119,42 +165,85 @@ export default function Host({ user }) {
   // The resync reads only the open question's answers, in full, and adds
   // them to what is already held: a whole-session read would hit the API's
   // row cap past 1,000 answers, and replacing state with it would silently
-  // drop the rest.
+  // drop the rest. The session row only ever moves forward (newerSession),
+  // so a slow resync can never flip the screen back a step.
   useEffect(() => {
     let cancelled = false
+    let healthy = false
+    let pollTimer = null
+    let flushTimer = null
+    let inflight = false
+    let incoming = { players: [], answers: [] }
 
-    async function resync() {
-      const questionId = currentQuestionId.current
-      const [{ data: s }, { data: ps }, { data: as }] = await Promise.all([
-        supabase.from('game_sessions').select('*').eq('id', sessionId).single(),
-        fetchPlayers(sessionId),
-        questionId ? fetchAnswers(sessionId, questionId) : Promise.resolve({ data: null }),
-      ])
-      if (cancelled) return
-      if (s) setSession((prev) => (prev && prev.status === s.status && prev.current_index === s.current_index ? prev : s))
-      if (ps) setPlayers(ps)
-      if (as) setAnswers((prev) => mergeById(prev, as))
+    function flush() {
+      flushTimer = null
+      const { players: ps, answers: as } = incoming
+      incoming = { players: [], answers: [] }
+      if (ps.length) setPlayers((prev) => mergeById(prev, ps))
+      if (as.length) setAnswers((prev) => mergeById(prev, as))
     }
 
+    function queue(kind, row) {
+      incoming[kind].push(row)
+      if (!flushTimer) flushTimer = setTimeout(flush, FLUSH_MS)
+    }
+
+    async function resync() {
+      if (inflight) return
+      inflight = true
+      try {
+        const questionId = currentQuestionId.current
+        const [{ data: s }, { data: ps }, { data: as }] = await Promise.all([
+          readSession(sessionId),
+          fetchPlayers(sessionId),
+          questionId ? fetchAnswers(sessionId, questionId) : Promise.resolve({ data: null }),
+        ])
+        if (cancelled) return
+        if (s) setSession((prev) => newerSession(prev, s))
+        if (ps) setPlayers((prev) => upsertById(prev, ps))
+        if (as) setAnswers((prev) => mergeById(prev, as))
+      } finally {
+        inflight = false
+      }
+    }
+
+    function schedule() {
+      clearTimeout(pollTimer)
+      if (cancelled) return
+      const pace = healthy ? RESYNC_HEALTHY_MS : RESYNC_DEGRADED_MS
+      pollTimer = setTimeout(() => {
+        resync()
+        schedule()
+      }, pace * (0.9 + Math.random() * 0.2))
+    }
+
+    // a fresh topic per subscription, so a channel whose removal timed out
+    // is never handed back by supabase-js (see lib/liveSync.js)
     const channel = supabase
-      .channel(`host-${sessionId}`)
+      .channel(`host-${sessionId}-${Math.random().toString(36).slice(2, 10)}`)
       .on(
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'game_sessions', filter: `id=eq.${sessionId}` },
-        (payload) => setSession(payload.new)
+        (payload) => setSession((prev) => newerSession(prev, payload.new))
       )
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'players', filter: `session_id=eq.${sessionId}` },
-        (payload) => setPlayers((ps) => (ps.some((p) => p.id === payload.new.id) ? ps : [...ps, payload.new]))
+        (payload) => queue('players', payload.new)
       )
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'answers', filter: `session_id=eq.${sessionId}` },
-        (payload) => setAnswers((as) => (as.some((a) => a.id === payload.new.id) ? as : [...as, payload.new]))
+        (payload) => queue('answers', payload.new)
       )
       .subscribe((status) => {
-        if (status === 'SUBSCRIBED') resync()
+        if (cancelled) return
+        const ok = status === 'SUBSCRIBED'
+        if (ok !== healthy) {
+          healthy = ok
+          schedule()
+        }
+        if (ok) resync()
       })
 
     const onWake = () => {
@@ -162,11 +251,12 @@ export default function Host({ user }) {
     }
     document.addEventListener('visibilitychange', onWake)
     window.addEventListener('online', onWake)
-    const poll = setInterval(resync, 10000)
+    schedule()
 
     return () => {
       cancelled = true
-      clearInterval(poll)
+      clearTimeout(pollTimer)
+      clearTimeout(flushTimer)
       document.removeEventListener('visibilitychange', onWake)
       window.removeEventListener('online', onWake)
       supabase.removeChannel(channel)
@@ -178,9 +268,11 @@ export default function Host({ user }) {
     if (!session) return
     let cancelled = false
     async function refresh() {
-      if (['reveal', 'leaderboard', 'finished'].includes(session.status)) {
+      // only a scored quiz has scores to show; in live mode and surveys
+      // every score is 0, and the joins already arrive through Realtime
+      if (scored && ['reveal', 'leaderboard', 'finished'].includes(session.status)) {
         const { data } = await fetchPlayers(sessionId, 'score', false)
-        if (!cancelled && data) setPlayers(data)
+        if (!cancelled && data) setPlayers((prev) => upsertById(prev, data))
       }
       // the survey and live summaries read every answer, one question at a
       // time; a scored quiz ends on its podium and needs none of them
@@ -202,6 +294,8 @@ export default function Host({ user }) {
     // scored and the question count join it for the summary, which needs the
     // quiz and its questions to know what to read
   }, [session?.status, session?.current_index, currentQuestion?.id, scored, questions.length]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const sorted = useMemo(() => [...players].sort((a, b) => b.score - a.score), [players])
 
   const currentAnswers = useMemo(
     () => (currentQuestion ? answers.filter((a) => a.question_id === currentQuestion.id) : []),
@@ -226,14 +320,52 @@ export default function Host({ user }) {
     return [...totals].sort((a, b) => b.score - a.score)
   }, [teamsOn, quiz?.teams, players])
 
+  // One host action at a time: a double click on "next question" must not
+  // send two. Each action applies the session row it gets back straight
+  // away, so the projector moves on the moment the database has, without
+  // waiting for its own Realtime echo - which a busy hall can delay.
+  async function act(run) {
+    if (actingRef.current) return false
+    actingRef.current = true
+    setActing(true)
+    setError('')
+    try {
+      return await run()
+    } finally {
+      actingRef.current = false
+      setActing(false)
+    }
+  }
+
+  function reportActionError(actionError) {
+    setError(isNetworkError(actionError)
+      ? t('אין כרגע חיבור לשרת. בדקו את החיבור לאינטרנט ונסו שוב.')
+      : t('רק מנהל המפגש יכול לשלוט בחידון. ודאו שאתם מחוברים לחשבון המתאים.'))
+  }
+
+  // .select().single() also turns "no row updated" (not the host) into an
+  // error, where a bare update would succeed silently
+  async function updateStatus(status) {
+    const { data, error: updateError } = await withTimeout(
+      supabase.from('game_sessions').update({ status }).eq('id', sessionId).select().single(),
+      WRITE_TIMEOUT_MS
+    )
+    if (updateError) {
+      reportActionError(updateError)
+      return false
+    }
+    setSession((prev) => newerSession(prev, data))
+    return true
+  }
+
   async function reveal() {
     if (!isHost || !currentQuestion || revealDone.current === currentQuestion.id) return
     revealDone.current = currentQuestion.id
-    const { error } = await supabase.from('game_sessions').update({ status: 'reveal' }).eq('id', sessionId)
-    if (error) {
-      revealDone.current = null
-      setError(t('רק מנהל המפגש יכול לשלוט בחידון. ודאו שאתם מחוברים לחשבון המתאים.'))
-    }
+    // the automatic reveal must not be lost to a click that is still on its
+    // way, so it waits for that click rather than being dropped
+    while (actingRef.current) await new Promise((resolve) => setTimeout(resolve, 100))
+    const ok = await act(() => updateStatus('reveal'))
+    if (!ok) revealDone.current = null
   }
 
   // A timed question closes itself: at the deadline the host screen
@@ -244,30 +376,44 @@ export default function Host({ user }) {
     if (!isHost || !timeLimit) return
     const deadline = deadlineMs(session.question_started_at, timeLimit)
     if (deadline == null) return
-    const wait = deadline - Date.now()
+    const wait = deadline - serverNow()
     if (wait <= 0) {
       reveal()
       return
     }
     const timer = setTimeout(reveal, wait)
     return () => clearTimeout(timer)
-  }, [isHost, timeLimit, session?.question_started_at, currentQuestion?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isHost, timeLimit, session?.question_started_at, currentQuestion?.id, clockReady]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function startQuestion(index) {
-    const { error } = await supabase.rpc('start_question', { p_session: sessionId, p_index: index })
-    if (error) setError(t('רק מנהל המפגש יכול לשלוט בחידון. ודאו שאתם מחוברים לחשבון המתאים.'))
+  function startQuestion(index) {
+    return act(async () => {
+      const { error: rpcError } = await withTimeout(
+        supabase.rpc('start_question', { p_session: sessionId, p_index: index }),
+        WRITE_TIMEOUT_MS
+      )
+      if (rpcError) {
+        reportActionError(rpcError)
+        return false
+      }
+      const { data } = await readSession(sessionId)
+      if (data) setSession((prev) => newerSession(prev, data))
+      return true
+    })
   }
 
-  async function setStatus(status) {
-    const { error } = await supabase.from('game_sessions').update({ status }).eq('id', sessionId)
-    if (error) setError(t('רק מנהל המפגש יכול לשלוט בחידון. ודאו שאתם מחוברים לחשבון המתאים.'))
+  function setStatus(status) {
+    return act(() => updateStatus(status))
   }
 
-  if (error && !session) return <div className="center-screen"><div className="error-box">{error}</div></div>
-  if (!session || !quiz) return <div className="center-screen"><div className="spinner" /></div>
+  if (!session || !quiz) {
+    return (
+      <div className="center-screen">
+        {error ? <div className="error-box">{error}</div> : <div className="spinner" />}
+      </div>
+    )
+  }
 
   const isLast = session.current_index >= questions.length - 1
-  const sorted = [...players].sort((a, b) => b.score - a.score)
   const cloudTexts = currentAnswers.map((a) => a.answer?.text).filter(Boolean)
 
   const neutralOrder = currentQuestion?.qtype === 'ranking'
@@ -315,16 +461,16 @@ export default function Host({ user }) {
     return (
       <div className="row center-row">
         {scored && (
-          <button className="btn light xl" onClick={() => setStatus('leaderboard')}>
+          <button className="btn light xl" disabled={acting} onClick={() => setStatus('leaderboard')}>
             {t('טבלת המובילים')}
           </button>
         )}
         {isLast ? (
-          <button className="btn primary xl" onClick={() => setStatus('finished')}>
+          <button className="btn primary xl" disabled={acting} onClick={() => setStatus('finished')}>
             {survey ? t('לסיכום הסקר') : live ? t('לסיכום החידון') : t('לתוצאות הסופיות')}
           </button>
         ) : (
-          <button className="btn primary xl" onClick={() => startQuestion(session.current_index + 1)}>
+          <button className="btn primary xl" disabled={acting} onClick={() => startQuestion(session.current_index + 1)}>
             {t('השאלה הבאה')}
           </button>
         )}
@@ -418,7 +564,7 @@ export default function Host({ user }) {
           {isHost && (
             <button
               className="btn primary xl"
-              disabled={players.length === 0}
+              disabled={players.length === 0 || acting}
               onClick={() => startQuestion(0)}
             >
               {t('התחלת החידון')}
@@ -500,7 +646,7 @@ export default function Host({ user }) {
           )}
 
           {isHost && (
-            <button className="btn light xl" onClick={reveal}>
+            <button className="btn light xl" disabled={acting} onClick={reveal}>
               {survey ? t('הצגת התוצאות') : t('חשיפת התשובה')}
             </button>
           )}
@@ -668,11 +814,11 @@ export default function Host({ user }) {
           </ol>
           {isHost && (
             isLast ? (
-              <button className="btn primary xl" onClick={() => setStatus('finished')}>
+              <button className="btn primary xl" disabled={acting} onClick={() => setStatus('finished')}>
                 {t('סיום החידון')}
               </button>
             ) : (
-              <button className="btn primary xl" onClick={() => startQuestion(session.current_index + 1)}>
+              <button className="btn primary xl" disabled={acting} onClick={() => startQuestion(session.current_index + 1)}>
                 {t('השאלה הבאה')}
               </button>
             )

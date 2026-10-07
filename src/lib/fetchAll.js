@@ -30,3 +30,14 @@ export function mergeById(prev, rows) {
   const fresh = rows.filter((r) => !known.has(r.id))
   return fresh.length ? [...prev, ...fresh] : prev
 }
+
+// Puts rows into a list by id, replacing the copy held for each one and
+// keeping every other row. For players, whose scores change: a refetch
+// brings the new scores without dropping a player whose Realtime insert
+// arrived after the refetch was sent.
+export function upsertById(prev, rows) {
+  if (!rows?.length) return prev
+  const fresh = new Map(rows.map((r) => [r.id, r]))
+  const kept = prev.filter((r) => !fresh.has(r.id))
+  return [...rows, ...kept]
+}

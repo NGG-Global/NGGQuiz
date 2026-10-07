@@ -1,13 +1,20 @@
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { supabase, isConfigured } from './supabaseClient'
 import { useI18n } from './lib/i18n.js'
-import Login from './pages/Login.jsx'
-import Library from './pages/Library.jsx'
-import Editor from './pages/Editor.jsx'
-import RunSetup from './pages/RunSetup.jsx'
-import Host from './pages/Host.jsx'
+import ErrorBoundary from './components/ErrorBoundary.jsx'
 import Play from './pages/Play.jsx'
+
+// The participant screen is in the main bundle; the admin and projector
+// screens load on demand. A phone scanning the QR code in a hall full of
+// phones on one Wi-Fi then downloads only what it needs to join.
+const Login = lazy(() => import('./pages/Login.jsx'))
+const Library = lazy(() => import('./pages/Library.jsx'))
+const Editor = lazy(() => import('./pages/Editor.jsx'))
+const RunSetup = lazy(() => import('./pages/RunSetup.jsx'))
+const Host = lazy(() => import('./pages/Host.jsx'))
+
+const spinner = <div className="center-screen"><div className="spinner" /></div>
 
 function SetupNotice() {
   const { t } = useI18n()
@@ -27,7 +34,7 @@ function SetupNotice() {
 }
 
 function Protected({ session, ready, children }) {
-  if (!ready) return <div className="center-screen"><div className="spinner" /></div>
+  if (!ready) return spinner
   if (!session) return <Navigate to="/login" replace />
   return children
 }
@@ -49,29 +56,33 @@ export default function App() {
   if (!isConfigured) return <SetupNotice />
 
   return (
-    <HashRouter>
-      <Routes>
-        <Route path="/login" element={<Login session={session} />} />
-        <Route path="/play" element={<Play />} />
-        <Route path="/play/:pin" element={<Play />} />
-        <Route
-          path="/"
-          element={<Protected session={session} ready={ready}><Library user={session?.user} /></Protected>}
-        />
-        <Route
-          path="/edit/:quizId"
-          element={<Protected session={session} ready={ready}><Editor user={session?.user} /></Protected>}
-        />
-        <Route
-          path="/run/:sessionId"
-          element={<Protected session={session} ready={ready}><RunSetup /></Protected>}
-        />
-        <Route
-          path="/host/:sessionId"
-          element={<Protected session={session} ready={ready}><Host user={session?.user} /></Protected>}
-        />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </HashRouter>
+    <ErrorBoundary>
+      <HashRouter>
+        <Suspense fallback={spinner}>
+          <Routes>
+            <Route path="/login" element={<Login session={session} />} />
+            <Route path="/play" element={<Play />} />
+            <Route path="/play/:pin" element={<Play />} />
+            <Route
+              path="/"
+              element={<Protected session={session} ready={ready}><Library user={session?.user} /></Protected>}
+            />
+            <Route
+              path="/edit/:quizId"
+              element={<Protected session={session} ready={ready}><Editor user={session?.user} /></Protected>}
+            />
+            <Route
+              path="/run/:sessionId"
+              element={<Protected session={session} ready={ready}><RunSetup /></Protected>}
+            />
+            <Route
+              path="/host/:sessionId"
+              element={<Protected session={session} ready={ready}><Host user={session?.user} /></Protected>}
+            />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </Suspense>
+      </HashRouter>
+    </ErrorBoundary>
   )
 }

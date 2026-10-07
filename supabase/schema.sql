@@ -114,6 +114,17 @@ alter table public.players add column if not exists team text;
 alter table public.answers add column if not exists answer jsonb;
 alter table public.answers alter column answer_index drop not null;
 
+-- the reads a live game makes on every phone and on the projector, so
+-- they stay index lookups as the answers table grows from event to event
+create index if not exists answers_session_question_idx
+  on public.answers (session_id, question_id, answered_at, id);
+create index if not exists answers_player_idx
+  on public.answers (player_id);
+create index if not exists players_session_score_idx
+  on public.players (session_id, score desc);
+create index if not exists questions_quiz_position_idx
+  on public.questions (quiz_id, position);
+
 -- keep the timer inside the range the editor offers
 do $$
 begin
@@ -301,10 +312,15 @@ begin
 end;
 $$;
 
+-- only an answer that earned points touches its player: live mode, polls
+-- and surveys would otherwise rewrite a players row (and send Realtime a
+-- change to process) for every answer, to add zero
 drop trigger if exists answers_apply_points on public.answers;
 create trigger answers_apply_points
   after insert on public.answers
-  for each row execute function public.apply_points();
+  for each row
+  when (new.points <> 0)
+  execute function public.apply_points();
 
 -- keep quizzes.updated_at fresh
 create or replace function public.touch_updated_at()
@@ -323,7 +339,8 @@ create trigger quizzes_touch
 -- ------------------------------------------------------------
 -- start_question: sets the question start time with the DATABASE
 -- clock, so scoring is immune to the host machine's clock skew.
--- Only the session host may call it.
+-- Only the session host may call it, and calling it again for the
+-- question that is already open changes nothing.
 -- ------------------------------------------------------------
 
 create or replace function public.start_question(p_session uuid, p_index int)
@@ -332,21 +349,69 @@ language plpgsql
 security definer
 set search_path = public
 as $$
+declare
+  s record;
 begin
+  select host_id, status, current_index into s
+    from public.game_sessions
+   where id = p_session
+     for update;
+
+  if not found or s.host_id is distinct from auth.uid() then
+    raise exception 'not authorized or session not found';
+  end if;
+
+  -- the question is already open: a second call (a double click, a retry
+  -- after a lost response) must not restart its clock
+  if s.status = 'question' and s.current_index = p_index then
+    return;
+  end if;
+
   update public.game_sessions
      set status = 'question',
          current_index = p_index,
          question_started_at = now()
-   where id = p_session
-     and host_id = auth.uid();
-
-  if not found then
-    raise exception 'not authorized or session not found';
-  end if;
+   where id = p_session;
 end;
 $$;
 
 grant execute on function public.start_question(uuid, int) to authenticated;
+
+-- ------------------------------------------------------------
+-- Live-session reads for phones
+-- player_standing: one player's score and rank (players on the same
+-- score share a rank) and the player count, so a phone does not
+-- download every player to find its own place.
+-- server_time: the database clock, so the countdowns on phones and on
+-- the projector run on the same clock as the scoring.
+-- ------------------------------------------------------------
+
+create or replace function public.player_standing(p_player uuid)
+returns table (score int, rank int, total int)
+language sql
+stable
+set search_path = public
+as $$
+  select me.score,
+         (select count(*)::int + 1 from public.players p
+           where p.session_id = me.session_id and p.score > me.score),
+         (select count(*)::int from public.players p
+           where p.session_id = me.session_id)
+    from public.players me
+   where me.id = p_player
+$$;
+
+grant execute on function public.player_standing(uuid) to anon, authenticated;
+
+create or replace function public.server_time()
+returns timestamptz
+language sql
+stable
+as $$
+  select now()
+$$;
+
+grant execute on function public.server_time() to anon, authenticated;
 
 -- ------------------------------------------------------------
 -- Admin access: any account with an @nggconsult.com email.

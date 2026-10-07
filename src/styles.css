@@ -467,6 +467,12 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--p
 .option-tile.clickable:hover { transform: translateY(-3px) scale(1.01); filter: brightness(1.08); }
 .option-tile.clickable:active { transform: scale(0.96); }
 .option-tile.dimmed { opacity: 0.3; filter: saturate(0.6); }
+/* an answer on its way: the tapped tile stays lit, the rest dim and stop responding */
+.option-tile.clickable:disabled { cursor: default; }
+.option-tile.clickable:disabled:hover { transform: none; filter: none; }
+.option-tile.clickable.dimmed:disabled:hover { filter: saturate(0.6); }
+.sending-note { margin: 0; font-size: 1rem; animation: sending-pulse 1.2s ease-in-out infinite; }
+@keyframes sending-pulse { 50% { opacity: 0.45; } }
 .option-tile.correct {
   outline: 4px solid #fff;
   animation: popIn 0.45s ease both, glowPulse 1.8s ease-in-out 0.5s infinite;
