@@ -26,6 +26,8 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+      # the live-session sync logic every phone runs; a failure stops the deploy
+      - run: npm test
       - run: npm run build
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
