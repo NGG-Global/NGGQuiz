@@ -5,6 +5,7 @@ import { QUESTION_TYPES, TEAM_COLORS, TRUE_FALSE_OPTIONS } from '../lib/question
 import { MAX_OPTIONS, MIN_OPTIONS, MIN_RANKING_OPTIONS, DEFAULT_OPTIONS, optionColor } from '../lib/optionStyle'
 import { TIMER_PRESETS } from '../lib/timer'
 import { SURVEY_TYPES, SCALE_PRESETS, DEFAULT_SCALE, scalePoints } from '../lib/survey'
+import { WORD_ENTRY_CHOICES, DEFAULT_WORD_ENTRIES, isMultiSelect, wordEntries } from '../lib/multiAnswer'
 import { useI18n } from '../lib/i18n.js'
 
 function blankQuestion(qtype = 'multiple_choice', timeLimit = null) {
@@ -389,7 +390,14 @@ export default function Editor() {
       if (q.qtype === 'true_false') {
         return { ...base, options: [...TRUE_FALSE_OPTIONS], correct_index: q.correct_index }
       }
-      if (q.qtype === 'poll' || q.qtype === 'ranking') {
+      if (q.qtype === 'poll') {
+        return {
+          ...base,
+          options: q.options.map((o) => o.trim()).filter(Boolean),
+          meta: isMultiSelect(q) ? { multi_select: true } : null,
+        }
+      }
+      if (q.qtype === 'ranking') {
         return { ...base, options: q.options.map((o) => o.trim()).filter(Boolean) }
       }
       if (q.qtype === 'scale') {
@@ -406,7 +414,11 @@ export default function Editor() {
       if (q.qtype === 'hotspot') {
         return { ...base, meta: { image_url: q.meta.image_url, x: q.meta.x, y: q.meta.y } }
       }
-      return base // word_cloud
+      if (q.qtype === 'word_cloud') {
+        const entries = wordEntries(q)
+        return { ...base, meta: entries > 1 ? { max_entries: entries } : null }
+      }
+      return base
     })
 
     // the new questions are written BEFORE the old ones are removed: if the
@@ -720,6 +732,25 @@ export default function Editor() {
                   ? t('לחצו על ה-✓ כדי לסמן את התשובה הנכונה.')
                   : t('סקר - אין תשובה נכונה ואין ניקוד; המסך המוקרן יציג את ההתפלגות.')}
               </p>
+              {q.qtype === 'poll' && (
+                <div className={`answer-mode${isMultiSelect(q) ? ' on' : ''}`}>
+                  <label className="check-line">
+                    <input
+                      type="checkbox"
+                      checked={isMultiSelect(q)}
+                      onChange={(e) => updateQuestion(i, { meta: { ...q.meta, multi_select: e.target.checked } })}
+                    />
+                    <span className="check-text">
+                      <span className="field-title">{t('אפשר לבחור יותר מאפשרות אחת')}</span>
+                      <span className="muted small">
+                        {isMultiSelect(q)
+                          ? t('המשתתפים יסמנו את כל האפשרויות המתאימות להם ואז ישלחו. האחוזים יחושבו מתוך מספר העונים, ולכן סכומם יכול לעלות על 100%.')
+                          : t('כל משתתף בוחר אפשרות אחת בלבד.')}
+                      </span>
+                    </span>
+                  </label>
+                </div>
+              )}
             </>
           )}
 
@@ -805,9 +836,45 @@ export default function Editor() {
           })()}
 
           {q.qtype === 'word_cloud' && (
-            <p className="muted small type-hint">
-              {t('☁️ המשתתפים יקלידו תשובה חופשית קצרה, והמסך המוקרן יבנה ענן מילים חי. אין תשובה נכונה ואין ניקוד.')}
-            </p>
+            <>
+              <p className="muted small type-hint">
+                {t('☁️ המשתתפים יקלידו תשובה חופשית קצרה, והמסך המוקרן יבנה ענן מילים חי. אין תשובה נכונה ואין ניקוד.')}
+              </p>
+              <div className={`answer-mode${wordEntries(q) > 1 ? ' on' : ''}`}>
+                <label className="check-line">
+                  <input
+                    type="checkbox"
+                    checked={wordEntries(q) > 1}
+                    onChange={(e) =>
+                      updateQuestion(i, {
+                        meta: { ...q.meta, max_entries: e.target.checked ? DEFAULT_WORD_ENTRIES : null },
+                      })
+                    }
+                  />
+                  <span className="check-text">
+                    <span className="field-title">{t('אפשר לשלוח יותר ממילה אחת')}</span>
+                    <span className="muted small">
+                      {wordEntries(q) > 1
+                        ? t('כל משתתף יוסיף כמה מילים וישלח אותן יחד. כל מילה נספרת בענן בנפרד.')
+                        : t('כל משתתף שולח מילה או ביטוי אחד.')}
+                    </span>
+                  </span>
+                </label>
+                {wordEntries(q) > 1 && (
+                  <label className="inline-label answer-mode-limit">
+                    {t('מספר המילים המרבי למשתתף:')}
+                    <select
+                      value={wordEntries(q)}
+                      onChange={(e) => updateQuestion(i, { meta: { ...q.meta, max_entries: Number(e.target.value) } })}
+                    >
+                      {WORD_ENTRY_CHOICES.map((n) => (
+                        <option key={n} value={n}>{t('עד {count} מילים', { count: n })}</option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+              </div>
+            </>
           )}
 
           {q.qtype === 'ranking' && (

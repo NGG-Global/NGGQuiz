@@ -2,6 +2,7 @@ import PollChart from './PollChart.jsx'
 import { scaleCounts, scalePoints } from '../lib/survey'
 import { scaleSummary, overallIndex } from '../lib/stats'
 import { useI18n } from '../lib/i18n.js'
+import { isMultiSelect, optionCounts } from '../lib/multiAnswer'
 
 // The screen a survey ends on, in place of a quiz's podium: what the room
 // said as a whole, and then question by question.
@@ -26,7 +27,7 @@ export default function SurveyConclusion({ questions, answers, participants }) {
       return { q, points, counts, summary }
     }
     const options = q.options || []
-    const counts = options.map((_, i) => mine.filter((a) => a.answer_index === i).length)
+    const counts = optionCounts(mine, options.length)
     return { q, options, counts, answered: mine.length }
   })
 
@@ -103,7 +104,12 @@ export default function SurveyConclusion({ questions, answers, participants }) {
                   </div>
                   <div className="metric"><span>{row.answered}</span><small>{t('עונים')}</small></div>
                 </div>
-                <PollChart options={row.options} counts={row.counts} reference={false} />
+                <PollChart
+                  options={row.options}
+                  counts={row.counts}
+                  reference={false}
+                  respondents={isMultiSelect(row.q) ? row.answered : null}
+                />
               </>
             ) : (
               <p className="muted">{t('לא התקבלו תשובות לשאלה זו.')}</p>

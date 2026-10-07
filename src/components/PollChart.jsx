@@ -31,6 +31,10 @@ const TOP_PAD = 4
 // `live` is for a chart that stays mounted while answers stream in: the bars
 // ease to each new height instead of jumping, since the rise animation only
 // plays once, on mount.
+//
+// `respondents` is for a question where one person may choose several
+// options: the percentages are then of the people who answered (so they can
+// add up to more than 100%), and the caption counts people, not choices.
 export default function PollChart({
   options,
   counts,
@@ -39,12 +43,14 @@ export default function PollChart({
   correctIndex = null,
   colorIndexes = null,
   live = false,
+  respondents = null,
 }) {
   const { t } = useI18n()
   const colorOf = (i) => colorIndexes?.[i] ?? i
   const judged = correctIndex != null
   const verdict = (i) => (judged ? (i === correctIndex ? ' correct' : ' wrong') : '')
-  const total = counts.reduce((sum, c) => sum + c, 0)
+  const multi = respondents != null
+  const total = multi ? respondents : counts.reduce((sum, c) => sum + c, 0)
   const reference = withReference ? normalReference(counts) : null
   const top = Math.max(1, ...counts, reference?.peak ?? 0)
 
@@ -111,7 +117,9 @@ export default function PollChart({
 
       <p className="poll-caption">
         {total ? (
-          t('{count} תשובות', { count: total })
+          multi
+            ? t('{count} עונים · בחירה מרובה', { count: total })
+            : t('{count} תשובות', { count: total })
         ) : (
           <span className="waiting-dots">{t('ממתינים לתשובות...')}</span>
         )}

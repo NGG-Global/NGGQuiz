@@ -3,6 +3,7 @@ import { optionColor, optionLabel } from '../lib/optionStyle'
 import { correctShare, averageRate } from '../lib/stats'
 import { LIVE_BAR_TYPES, ANSWER_SLIDE_TYPES } from '../lib/quizMode'
 import { useI18n } from '../lib/i18n.js'
+import { isMultiSelect, optionCounts } from '../lib/multiAnswer'
 
 // The screen a live quiz ends on, in place of a podium: how the room did as
 // a whole, then question by question. Answers are counted, never ranked, so
@@ -27,7 +28,7 @@ export default function LiveConclusion({ questions, answers, participants }) {
     .map(({ q, number }) => {
       const mine = byQuestion.get(q.id) || []
       const options = q.options || []
-      const counts = options.map((_, i) => mine.filter((a) => a.answer_index === i).length)
+      const counts = optionCounts(mine, options.length)
       const judged = ANSWER_SLIDE_TYPES.includes(q.qtype)
       return {
         q,
@@ -87,6 +88,7 @@ export default function LiveConclusion({ questions, answers, participants }) {
                   correctIndex={row.judged ? row.q.correct_index : null}
                   colorIndexes={row.colors}
                   reference={false}
+                  respondents={isMultiSelect(row.q) ? row.answered : null}
                 />
               </>
             ) : (
