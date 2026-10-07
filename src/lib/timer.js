@@ -3,7 +3,10 @@
 // A question whose time_limit is null has no limit at all - the host
 // closes it manually, exactly as before this feature. When a limit is
 // set, the deadline is derived from the SERVER timestamp written by
-// start_question(), so every screen counts down against the same clock.
+// start_question(), and compared with serverNow() - the device clock
+// corrected to the database's - so every screen counts down against the
+// same clock.
+import { serverNow } from './serverClock.js'
 
 // Limits offered in the editor (seconds).
 export const TIMER_PRESETS = [10, 15, 20, 30, 45, 60, 90, 120, 180]
@@ -24,5 +27,5 @@ export function deadlineMs(startedAt, limit) {
 export function secondsLeft(startedAt, limit) {
   const deadline = deadlineMs(startedAt, limit)
   if (deadline == null) return null
-  return Math.min(limit, Math.max(0, Math.ceil((deadline - Date.now()) / 1000)))
+  return Math.min(limit, Math.max(0, Math.ceil((deadline - serverNow()) / 1000)))
 }

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { serverNow } from '../lib/serverClock'
 
 // Counts up from a server-side start timestamp (m:ss).
 export default function Elapsed({ since }) {
@@ -6,7 +7,7 @@ export default function Elapsed({ since }) {
 
   useEffect(() => {
     const start = new Date(since).getTime()
-    const tick = () => setSeconds(Math.max(0, Math.floor((Date.now() - start) / 1000)))
+    const tick = () => setSeconds(Math.max(0, Math.floor((serverNow() - start) / 1000)))
     tick()
     const timer = setInterval(tick, 500)
     return () => clearInterval(timer)

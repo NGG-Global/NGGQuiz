@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { supabase } from '../supabaseClient'
 import { OPTION_SHAPES, optionColor, optionLabel } from '../lib/optionStyle'
 import { deadlineMs } from '../lib/timer'
+import { serverNow, syncServerClock } from '../lib/serverClock'
+import { followSession, newerSession, withTimeout } from '../lib/liveSync'
+import { loadSavedPlayer, savePlayer, forgetPlayer, newPlayerId } from '../lib/playerStore'
 import { TEAM_COLORS, teamColor, shuffled, hasCorrectOption } from '../lib/questionTypes'
 import { quizFlags } from '../lib/quizMode'
 import { useI18n } from '../lib/i18n.js'
@@ -11,12 +14,21 @@ import Countdown, { useSecondsLeft } from '../components/Countdown.jsx'
 import Scale from '../components/Scale.jsx'
 import Explanation from '../components/Explanation.jsx'
 
-function storageKey(pin) {
-  return `nggquiz-player-${pin}`
-}
-
 // the quiz columns a phone needs, for both the join and the game screens
 const QUIZ_FIELDS = 'kind, scored, anonymous, teams_enabled, team_mode, teams, title'
+const QUESTION_FIELDS = 'id, qtype, text, options, meta, position, explanation, time_limit'
+const ANSWER_FIELDS = 'question_id, is_correct, points, answer_index, answer'
+
+// how long a read or a write may hang on a flaky mobile network before the
+// phone gives up on it and tries again
+const READ_TIMEOUT_MS = 8000
+const WRITE_TIMEOUT_MS = 10000
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+// a failed request with no database error code never reached the database
+// (offline, timed out); one with a code was answered and refused
+const isNetworkError = (error) => Boolean(error) && !error.code
 
 // An anonymous player still needs a players row - every answer points at
 // one - so each phone gets a random nickname that no screen ever shows.
@@ -26,9 +38,62 @@ function anonymousNickname() {
   return `anon-${Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')}`
 }
 
+// the open session behind a PIN, and its quiz
+async function lookupJoin(cleanPin) {
+  const { data: s, error: sErr } = await withTimeout(
+    supabase.from('game_sessions').select('*').eq('pin', cleanPin).neq('status', 'finished').maybeSingle(),
+    READ_TIMEOUT_MS
+  )
+  if (sErr) return { error: 'offline' }
+  if (!s) return { error: 'missing' }
+  const { data: qz, error: qErr } = await withTimeout(
+    supabase.from('quizzes').select(QUIZ_FIELDS).eq('id', s.quiz_id).single(),
+    READ_TIMEOUT_MS
+  )
+  if (qErr) return { error: 'offline' }
+  return { session: s, quiz: qz }
+}
+
+// the saved player and its session, read back after a refresh
+async function fetchSavedPlayer({ playerId, sessionId }) {
+  const [s, p] = await Promise.all([
+    withTimeout(supabase.from('game_sessions').select('*').eq('id', sessionId).maybeSingle(), READ_TIMEOUT_MS),
+    withTimeout(supabase.from('players').select('*').eq('id', playerId).maybeSingle(), READ_TIMEOUT_MS),
+  ])
+  if (s.error || p.error) return { error: 'offline' }
+  if (!s.data || !p.data || p.data.session_id !== sessionId) return { error: 'missing' }
+  return { session: s.data, player: p.data }
+}
+
+let standingRpcMissing = false
+
+// This player's score and rank. player_standing() counts in the database;
+// before that function exists, every player's score is read instead (the
+// old way - heavier, and capped at the API's first 1,000 rows).
+async function fetchStanding(playerId, sessionId) {
+  if (!standingRpcMissing) {
+    const { data, error } = await withTimeout(
+      supabase.rpc('player_standing', { p_player: playerId }).maybeSingle(),
+      READ_TIMEOUT_MS
+    )
+    if (!error) return data ? { rank: data.rank, total: data.total, score: data.score } : null
+    // PGRST202: no such function in the API schema - the migration has not run
+    if (error.code !== 'PGRST202' && error.code !== '42883') return null
+    standingRpcMissing = true
+  }
+  const { data } = await withTimeout(
+    supabase.from('players').select('id, score').eq('session_id', sessionId).order('score', { ascending: false }),
+    READ_TIMEOUT_MS
+  )
+  if (!data) return null
+  const idx = data.findIndex((p) => p.id === playerId)
+  return idx >= 0 ? { rank: idx + 1, total: data.length, score: data[idx].score } : null
+}
+
 export default function Play() {
   const { t } = useI18n()
   const { pin: pinParam } = useParams()
+  const navigate = useNavigate()
 
   const [pin, setPin] = useState(pinParam || '')
   const [nickname, setNickname] = useState('')
@@ -38,20 +103,32 @@ export default function Play() {
   const [pendingJoin, setPendingJoin] = useState(null) // {session, quiz, nickname} waiting for team pick
   const [joinInfo, setJoinInfo] = useState(null) // {pin, session, quiz} looked up for the join form
   const [autoJoining, setAutoJoining] = useState(false)
+  const [restoring, setRestoring] = useState(null) // null | 'restoring' | 'failed'
+  const [restoreToken, setRestoreToken] = useState(0)
   const [questions, setQuestions] = useState([])
   const [myAnswers, setMyAnswers] = useState({}) // question_id -> result row
   const [rankInfo, setRankInfo] = useState(null)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [sending, setSending] = useState(null) // {questionId, index} while an answer is on its way
   const [loadFailed, setLoadFailed] = useState(false)
   const [reloadToken, setReloadToken] = useState(0)
   const answering = useRef(false)
   const autoJoinStarted = useRef(false)
+  const playerRef = useRef(null)
+  // one player id per join on this page, reused when a join is retried, so
+  // a retry after a lost response finds the row the first try created
+  const joinIds = useRef({})
+  // questions this phone tried to answer; if the outcome was lost on the
+  // way back, the reveal reads it from the database
+  const attempted = useRef(new Set())
 
   // per-question input state
   const [cloudText, setCloudText] = useState('')
   const [rankOrder, setRankOrder] = useState([]) // original indices in chosen order
   const [tapPos, setTapPos] = useState(null)
+
+  playerRef.current = player
 
   const currentQuestion = useMemo(
     () => (session && session.current_index >= 0 ? questions[session.current_index] : null),
@@ -62,35 +139,52 @@ export default function Play() {
   const timeLimit = (session?.status === 'question' && currentQuestion?.time_limit) || null
   const timeLeft = useSecondsLeft(session?.question_started_at, timeLimit)
   const timeUp = timeLimit != null && timeLeft === 0
+  const finished = session?.status === 'finished'
 
-  // restore a previous join after refresh; with nothing to restore, a link
-  // to an anonymous quiz joins straight away, since there is nothing to type
+  // restore a previous join after a refresh, a discarded tab or a second
+  // scan of the QR code; with nothing to restore, a link to an anonymous
+  // quiz joins straight away, since there is nothing to type. A network
+  // failure is retried and never taken for "no such player": that would
+  // make the phone join again as somebody new.
   useEffect(() => {
     if (!pinParam) return
-    let saved
-    try {
-      saved = JSON.parse(sessionStorage.getItem(storageKey(pinParam)) || 'null')
-    } catch {
-      saved = null // corrupted entry - fall back to the join screen
-    }
-    if (!saved?.playerId || !saved?.sessionId) {
+    const saved = loadSavedPlayer(pinParam)
+    if (!saved) {
       autoJoinIfAnonymous(pinParam)
       return
     }
-    const { playerId, sessionId } = saved
+    // just joined on this page: the address changed to /play/<pin>, the
+    // player is already here
+    if (playerRef.current?.id === saved.playerId) return
     let cancelled = false
-    async function restore() {
-      const [{ data: s }, { data: p }] = await Promise.all([
-        supabase.from('game_sessions').select('*').eq('id', sessionId).single(),
-        supabase.from('players').select('*').eq('id', playerId).single(),
-      ])
-      if (cancelled || !s || !p || s.status === 'finished') return
-      setSession(s)
-      setPlayer(p)
+    let timer = null
+    setRestoring('restoring')
+
+    async function attempt(n) {
+      const result = await fetchSavedPlayer(saved)
+      if (cancelled) return
+      if (result.error === 'offline') {
+        if (n >= 4) setRestoring('failed')
+        else timer = setTimeout(() => attempt(n + 1), 1000 * 2 ** n)
+        return
+      }
+      setRestoring(null)
+      if (result.error) {
+        // the session or the player is gone: start over as a new join
+        forgetPlayer(pinParam)
+        autoJoinIfAnonymous(pinParam)
+        return
+      }
+      setSession((prev) => newerSession(prev, result.session))
+      setPlayer(result.player)
     }
-    restore()
-    return () => { cancelled = true }
-  }, [pinParam])
+
+    attempt(0)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [pinParam, restoreToken]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // an anonymous quiz needs no nickname: once a full PIN is typed (or comes
   // in the link), look the quiz up so the form can drop the field
@@ -117,12 +211,11 @@ export default function Play() {
 
     async function load(attempt = 0) {
       const [{ data: qz }, { data: qs }] = await Promise.all([
-        supabase.from('quizzes').select(QUIZ_FIELDS).eq('id', quizId).single(),
-        supabase
-          .from('questions')
-          .select('id, qtype, text, options, meta, position, explanation, time_limit')
-          .eq('quiz_id', quizId)
-          .order('position'),
+        withTimeout(supabase.from('quizzes').select(QUIZ_FIELDS).eq('id', quizId).single(), READ_TIMEOUT_MS),
+        withTimeout(
+          supabase.from('questions').select(QUESTION_FIELDS).eq('quiz_id', quizId).order('position'),
+          READ_TIMEOUT_MS
+        ),
       ])
       if (cancelled) return
       if (qz) setQuiz(qz)
@@ -154,94 +247,41 @@ export default function Play() {
   useEffect(() => {
     if (!session?.id || !player?.id) return
     let cancelled = false
-    supabase
-      .from('answers')
-      .select('question_id, is_correct, points, answer_index, answer')
-      .eq('session_id', session.id)
-      .eq('player_id', player.id)
-      .then(({ data }) => {
-        if (cancelled || !data?.length) return
-        setMyAnswers((m) => {
-          const next = { ...m }
-          data.forEach((a) => {
-            // never overwrite a locally known result with a stale row
-            if (!next[a.question_id] || next[a.question_id].pending) next[a.question_id] = a
-          })
-          return next
+    withTimeout(
+      supabase.from('answers').select(ANSWER_FIELDS).eq('session_id', session.id).eq('player_id', player.id),
+      READ_TIMEOUT_MS
+    ).then(({ data }) => {
+      if (cancelled || !data?.length) return
+      setMyAnswers((m) => {
+        const next = { ...m }
+        data.forEach((a) => {
+          // never overwrite a locally known result with a stale row
+          if (!next[a.question_id] || next[a.question_id].pending) next[a.question_id] = a
         })
+        return next
       })
+    })
     return () => { cancelled = true }
   }, [session?.id, player?.id])
 
-  // follow the session state in realtime, with a resync safety net:
-  // realtime updates are lost while the phone is locked, the tab is in
-  // the background or the network blips, and missed events are never
-  // replayed - so we also refetch on (re)connect and on wake, and keep
-  // a slow poll running as a last resort
+  // follow the session in realtime, with the resync safety net described in
+  // lib/liveSync.js. A finished game changes no more, so the phone stops
+  // following it and leaves the database alone.
   useEffect(() => {
-    if (!session?.id) return
-    const sessionId = session.id
-    let cancelled = false
-
-    async function sync() {
-      const { data } = await supabase
-        .from('game_sessions')
-        .select('*')
-        .eq('id', sessionId)
-        .single()
-      if (cancelled || !data) return
-      setSession((prev) =>
-        prev &&
-        prev.status === data.status &&
-        prev.current_index === data.current_index &&
-        prev.question_started_at === data.question_started_at
-          ? prev
-          : data
-      )
-    }
-
-    const channel = supabase
-      .channel(`play-${sessionId}`)
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'game_sessions', filter: `id=eq.${sessionId}` },
-        (payload) => setSession(payload.new)
-      )
-      .subscribe((status) => {
-        if (status === 'SUBSCRIBED') sync()
-      })
-
-    const onWake = () => {
-      if (document.visibilityState === 'visible') sync()
-    }
-    document.addEventListener('visibilitychange', onWake)
-    window.addEventListener('focus', onWake)
-    window.addEventListener('online', onWake)
-    // every 5 seconds give or take 20%, drawn afresh each time, so hundreds
-    // of phones that joined together do not poll the database in lockstep
-    let poll = null
-    const schedule = () => {
-      poll = setTimeout(() => {
-        sync()
-        if (!cancelled) schedule()
-      }, 5000 * (0.8 + Math.random() * 0.4))
-    }
-    schedule()
-
-    return () => {
-      cancelled = true
-      clearTimeout(poll)
-      document.removeEventListener('visibilitychange', onWake)
-      window.removeEventListener('focus', onWake)
-      window.removeEventListener('online', onWake)
-      supabase.removeChannel(channel)
-    }
-  }, [session?.id])
+    if (!session?.id || finished) return
+    syncServerClock(supabase)
+    const follower = followSession(supabase, session.id, {
+      label: 'play',
+      onState: (row) => setSession((prev) => newerSession(prev, row)),
+    })
+    return () => follower.stop()
+  }, [session?.id, finished])
 
   // reset per-question input state when a new question starts
   useEffect(() => {
     if (!currentQuestion) return
     answering.current = false // a submit that hung on the previous question must not block this one
+    setSending(null)
     setError('')
     setCloudText('')
     setTapPos(null)
@@ -250,38 +290,54 @@ export default function Play() {
     }
   }, [currentQuestion?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // pull my rank when scores are shown. Not in an unscored quiz: there is no
-  // rank to show, and with hundreds of phones this query would run on every
-  // one of them at every reveal
+  // at the reveal, a phone that sent an answer but never heard back (the
+  // response was lost, or the request timed out after it landed) reads the
+  // outcome, so it does not show "no answer received" for an answer that
+  // counted. Phones that answered normally, or never tapped, skip this.
   useEffect(() => {
-    if (!session || !player || !quiz || !scored) return
+    if (session?.status !== 'reveal' || !currentQuestion || !player) return
+    const questionId = currentQuestion.id
+    const known = myAnswers[questionId]
+    if (known && !known.pending) return
+    if (!known && !attempted.current.has(questionId)) return
+    let cancelled = false
+    fetchMyAnswer(questionId).then((row) => {
+      if (!cancelled && row) setMyAnswers((m) => ({ ...m, [questionId]: row }))
+    })
+    return () => { cancelled = true }
+  }, [session?.status, currentQuestion?.id, player?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // pull my rank when scores are shown. Not in an unscored quiz: there is no
+  // rank to show - and until the quiz has loaded, quizFlags reads any quiz as
+  // scored, so nothing is asked before then. The reads of a whole hall are
+  // spread over a second or so, since every phone asks at the same moment.
+  const quizLoaded = Boolean(quiz)
+  useEffect(() => {
+    if (!session || !player || !quizLoaded || !scored) return
     if (!['leaderboard', 'finished', 'reveal'].includes(session.status)) return
     let cancelled = false
-    supabase
-      .from('players')
-      .select('id, score, team')
-      .eq('session_id', session.id)
-      .order('score', { ascending: false })
-      .then(({ data }) => {
-        if (cancelled || !data) return
-        const idx = data.findIndex((p) => p.id === player.id)
-        if (idx >= 0) setRankInfo({ rank: idx + 1, total: data.length, score: data[idx].score })
-      })
-    return () => { cancelled = true }
-  }, [session?.status, session?.id, player, quiz, scored]) // eslint-disable-line react-hooks/exhaustive-deps
+    const timer = setTimeout(async () => {
+      const standing = await fetchStanding(player.id, session.id)
+      if (!cancelled && standing) setRankInfo(standing)
+    }, Math.random() * 1200)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [session?.status, session?.current_index, session?.id, player?.id, quizLoaded, scored]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // the open session behind a PIN, and its quiz
-  async function lookupJoin(cleanPin) {
-    const { data: s, error: sErr } = await supabase
-      .from('game_sessions')
-      .select('*')
-      .eq('pin', cleanPin)
-      .neq('status', 'finished')
-      .maybeSingle()
-    if (sErr) return { error: 'offline' }
-    if (!s) return { error: 'missing' }
-    const { data: qz } = await supabase.from('quizzes').select(QUIZ_FIELDS).eq('id', s.quiz_id).single()
-    return { session: s, quiz: qz }
+  async function fetchMyAnswer(questionId) {
+    if (!playerRef.current) return null
+    const { data } = await withTimeout(
+      supabase
+        .from('answers')
+        .select(ANSWER_FIELDS)
+        .eq('question_id', questionId)
+        .eq('player_id', playerRef.current.id)
+        .maybeSingle(),
+      READ_TIMEOUT_MS
+    )
+    return data || null
   }
 
   async function autoJoinIfAnonymous(cleanPin) {
@@ -290,10 +346,17 @@ export default function Play() {
     if (autoJoinStarted.current) return
     autoJoinStarted.current = true
     setAutoJoining(true)
-    const info = await lookupJoin(cleanPin)
+    let info = await lookupJoin(cleanPin)
+    // a hall full of phones on one Wi-Fi: a failed lookup is retried before
+    // the phone falls back to the form
+    for (let attempt = 0; info.error === 'offline' && attempt < 3; attempt++) {
+      await sleep(1000 * 2 ** attempt)
+      info = await lookupJoin(cleanPin)
+    }
     if (!info.error) setJoinInfo({ pin: cleanPin, ...info })
+    if (info.error === 'offline') setError(t('אין כרגע חיבור לשרת. בדקו את החיבור לאינטרנט ונסו שוב.'))
     if (!info.error && quizFlags(info.quiz).anonymous) {
-      await registerAnonymous(info.session, info.quiz, cleanPin)
+      await registerAnonymous(info.session, info.quiz, cleanPin, { retries: 3 })
     }
     setAutoJoining(false)
   }
@@ -325,6 +388,19 @@ export default function Play() {
     const { session: s, quiz: qz } = info
     setJoinInfo({ pin: cleanPin, ...info })
 
+    // this device already joined this game (a refresh of the /play form, or
+    // a second tab): continue as that player instead of registering again
+    const saved = loadSavedPlayer(cleanPin)
+    if (saved?.sessionId === s.id) {
+      const restored = await fetchSavedPlayer(saved)
+      if (restored.player) {
+        setBusy(false)
+        completeJoin(restored.session, qz, restored.player, cleanPin)
+        return
+      }
+      if (restored.error === 'missing') forgetPlayer(cleanPin)
+    }
+
     if (quizFlags(qz).anonymous) {
       await registerAnonymous(s, qz, cleanPin)
       return
@@ -351,7 +427,10 @@ export default function Play() {
   }
 
   async function pickBalancedTeam(sessionId, teams) {
-    const { data } = await supabase.from('players').select('team').eq('session_id', sessionId)
+    const { data } = await withTimeout(
+      supabase.from('players').select('team').eq('session_id', sessionId),
+      READ_TIMEOUT_MS
+    )
     const counts = Object.fromEntries(teams.map((t) => [t, 0]))
     ;(data || []).forEach((p) => {
       if (p.team in counts) counts[p.team] += 1
@@ -361,102 +440,139 @@ export default function Play() {
     return candidates[Math.floor(Math.random() * candidates.length)]
   }
 
+  // Inserts the players row under an id chosen here. The id is saved before
+  // the insert goes out, so a refresh while it is in flight still finds the
+  // row; and a retry reuses it, so a duplicate-key answer can be told apart:
+  // our own earlier row (same id) or another player's nickname.
+  async function insertPlayer(s, cleanPin, idKey, fields) {
+    const id = (joinIds.current[idKey] ||= newPlayerId())
+    savePlayer(cleanPin, { playerId: id, sessionId: s.id })
+    const { data, error: insertError } = await withTimeout(
+      supabase.from('players').insert({ id, session_id: s.id, ...fields }).select().single(),
+      WRITE_TIMEOUT_MS
+    )
+    if (!insertError) return { player: data }
+    if (insertError.code === '23505') {
+      const { data: mine, error: readError } = await withTimeout(
+        supabase.from('players').select('*').eq('id', id).maybeSingle(),
+        READ_TIMEOUT_MS
+      )
+      if (mine) return { player: mine }
+      if (!readError) {
+        // the nickname is someone else's; a new attempt gets a new id
+        delete joinIds.current[idKey]
+        forgetPlayer(cleanPin)
+        return { error: 'taken' }
+      }
+      return { error: 'offline' }
+    }
+    if (isNetworkError(insertError)) return { error: 'offline' }
+    // refused by the database (the game ended, for one): nothing to restore
+    delete joinIds.current[idKey]
+    forgetPlayer(cleanPin)
+    return { error: 'refused' }
+  }
+
   async function registerPlayer(s, qz, cleanNick, cleanPin, team) {
     setBusy(true)
-    const { data: p, error: pErr } = await supabase
-      .from('players')
-      .insert({ session_id: s.id, nickname: cleanNick, team })
-      .select()
-      .single()
+    const result = await insertPlayer(s, cleanPin, `${s.id}:${cleanNick}`, { nickname: cleanNick, team })
     setBusy(false)
-    if (pErr) {
-      setError(pErr.code === '23505' ? t('הכינוי הזה כבר תפוס במשחק. בחרו כינוי אחר.') : t('ההצטרפות נכשלה. נסו שוב.'))
+    if (result.error) {
+      setError(result.error === 'taken' ? t('הכינוי הזה כבר תפוס במשחק. בחרו כינוי אחר.') : t('ההצטרפות נכשלה. נסו שוב.'))
       setPendingJoin(null)
       return
     }
-    completeJoin(s, qz, p, cleanPin)
+    completeJoin(s, qz, result.player, cleanPin)
   }
 
-  async function registerAnonymous(s, qz, cleanPin) {
+  async function registerAnonymous(s, qz, cleanPin, { retries = 0 } = {}) {
     setBusy(true)
-    let p = null
+    let result = null
     // a clash between two random nicknames is all but impossible, but it is
-    // retried rather than shown to someone who never typed a nickname
-    for (let attempt = 0; attempt <= 3 && !p; attempt++) {
-      const { data, error: pErr } = await supabase
-        .from('players')
-        .insert({ session_id: s.id, nickname: anonymousNickname(), team: null })
-        .select()
-        .single()
-      if (!pErr) p = data
-      else if (pErr.code !== '23505') break
+    // retried rather than shown to someone who never typed a nickname; so is
+    // a network failure on the automatic join, where there is no form to retry
+    for (let clash = 0, lost = 0; ; ) {
+      result = await insertPlayer(s, cleanPin, s.id, { nickname: anonymousNickname(), team: null })
+      if (result.player) break
+      if (result.error === 'taken' && clash < 3) clash += 1
+      else if (result.error === 'offline' && lost < retries) await sleep(1000 * 2 ** lost++)
+      else break
     }
     setBusy(false)
-    if (!p) {
+    if (!result.player) {
       setError(t('ההצטרפות נכשלה. נסו שוב.'))
       return
     }
-    completeJoin(s, qz, p, cleanPin)
+    setError('')
+    completeJoin(s, qz, result.player, cleanPin)
   }
 
-  // a joined player is remembered per PIN, so a refresh keeps the same player
+  // a joined player is remembered per PIN, so a refresh keeps the same
+  // player; the address becomes /play/<pin>, which is what a refresh restores
   function completeJoin(s, qz, p, cleanPin) {
-    try {
-      sessionStorage.setItem(storageKey(cleanPin), JSON.stringify({ playerId: p.id, sessionId: s.id }))
-    } catch { /* storage unavailable - the game still works, a refresh just rejoins */ }
-    setSession(s)
+    savePlayer(cleanPin, { playerId: p.id, sessionId: s.id })
+    playerRef.current = p
+    setSession((prev) => newerSession(prev, s))
     setQuiz(qz)
     setPlayer(p)
     setPendingJoin(null)
+    if (pinParam !== cleanPin) navigate(`/play/${cleanPin}`, { replace: true })
   }
 
-  async function submitAnswer(payload) {
+  async function submitAnswer(payload, index = null) {
     if (!currentQuestion || myAnswer || answering.current) return
     // a timed question stops accepting answers at its deadline (the
     // database enforces the same deadline, with a small grace window)
     const deadline = deadlineMs(session.question_started_at, currentQuestion.time_limit)
-    if (deadline != null && Date.now() >= deadline) return
+    if (deadline != null && serverNow() >= deadline) return
     answering.current = true
     setError('')
     const questionId = currentQuestion.id
+    const questionIndex = session.current_index
+    attempted.current.add(questionId)
+    setSending({ questionId, index })
     try {
-      let request = supabase
-        .from('answers')
-        .insert({
-          session_id: session.id,
-          question_id: questionId,
-          player_id: player.id,
-          ...payload,
-        })
-        .select('is_correct, points, answer_index, answer')
-        .single()
       // don't let a request that hangs on a flaky mobile network keep the player stuck
-      if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
-        request = request.abortSignal(AbortSignal.timeout(10000))
-      }
-      const { data, error: insertError } = await request
+      const { data, error: insertError } = await withTimeout(
+        supabase
+          .from('answers')
+          .insert({
+            session_id: session.id,
+            question_id: questionId,
+            player_id: player.id,
+            ...payload,
+          })
+          .select('is_correct, points, answer_index, answer')
+          .single(),
+        WRITE_TIMEOUT_MS
+      )
       if (!insertError && data) {
-        setMyAnswers((m) => ({ ...m, [questionId]: data }))
-      } else if (insertError?.code === '23505') {
-        // an earlier attempt did land - mark it so the player moves on
-        setMyAnswers((m) => ({ ...m, [questionId]: { pending: true } }))
-      } else if (insertError) {
-        // the host may have already closed the question - resync so the
-        // screen follows the game instead of freezing; otherwise ask the
-        // player to try again rather than failing silently
-        const { data: s } = await supabase
-          .from('game_sessions')
-          .select('*')
-          .eq('id', session.id)
-          .single()
-        if (s) setSession(s)
-        const missedDeadline = deadline != null && Date.now() >= deadline
-        if (!missedDeadline && (!s || (s.status === 'question' && s.current_index === session.current_index))) {
-          setError(t('שליחת התשובה נכשלה. בדקו את החיבור ונסו שוב.'))
-        }
+        setMyAnswers((m) => ({ ...m, [questionId]: { question_id: questionId, ...data } }))
+        return
+      }
+      // a duplicate means an earlier try did land; a failure may also have
+      // landed with only the response lost - either way, read what the
+      // database holds, so the reveal shows the real result
+      const landed = await fetchMyAnswer(questionId)
+      if (landed || insertError?.code === '23505') {
+        setMyAnswers((m) => ({ ...m, [questionId]: landed || { pending: true } }))
+        return
+      }
+      // the host may have already closed the question - resync so the
+      // screen follows the game instead of freezing; otherwise ask the
+      // player to try again rather than failing silently
+      const { data: s } = await withTimeout(
+        supabase.from('game_sessions').select('*').eq('id', session.id).maybeSingle(),
+        READ_TIMEOUT_MS
+      )
+      if (s) setSession((prev) => newerSession(prev, s))
+      const missedDeadline = deadline != null && serverNow() >= deadline
+      if (!missedDeadline && (!s || (s.status === 'question' && s.current_index === questionIndex))) {
+        setError(t('שליחת התשובה נכשלה. בדקו את החיבור ונסו שוב.'))
       }
     } finally {
       answering.current = false
+      setSending(null)
     }
   }
 
@@ -497,13 +613,36 @@ export default function Play() {
     )
   }
 
-  if (!player && autoJoining) {
+  // coming back after a refresh: never flash the join form, which would
+  // invite a second join as somebody new
+  if (!player && restoring === 'failed') {
+    return (
+      <div className="center-screen">
+        <div className="card login-card">
+          <h1 className="brand">NGG Quiz</h1>
+          <p className="muted" style={{ textAlign: 'center' }}>
+            {t('אין כרגע חיבור לשרת. בדקו את החיבור לאינטרנט ונסו שוב.')}
+          </p>
+          <button
+            className="btn primary"
+            onClick={() => { setRestoring('restoring'); setRestoreToken((n) => n + 1) }}
+          >
+            {t('ניסיון חוזר')}
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  if (!player && (autoJoining || restoring)) {
     return (
       <div className="center-screen">
         <div className="card login-card">
           <h1 className="brand">NGG Quiz</h1>
           <div className="spinner" />
-          <p className="muted" style={{ textAlign: 'center' }}>{t('מצטרף...')}</p>
+          <p className="muted" style={{ textAlign: 'center' }}>
+            {restoring ? t('מתחברים מחדש למשחק...') : t('מצטרף...')}
+          </p>
         </div>
       </div>
     )
@@ -618,6 +757,7 @@ export default function Play() {
           ) : (
             <>
               <h2 className="player-question">{currentQuestion.text}</h2>
+              {sending && <p className="stage-subtitle sending-note">{t('שולחים את התשובה...')}</p>}
 
               {(hasCorrectOption(currentQuestion.qtype) || currentQuestion.qtype === 'poll') && (
                 <div
@@ -625,10 +765,11 @@ export default function Play() {
                 >
                   {currentQuestion.options.map((_, i) => (
                     <button
-                      className={`option-tile clickable color-${optionColor(currentQuestion, i)}`}
+                      className={`option-tile clickable color-${optionColor(currentQuestion, i)}${sending && sending.index !== i ? ' dimmed' : ''}`}
                       style={{ '--i': i }}
                       key={i}
-                      onClick={() => submitAnswer({ answer_index: i })}
+                      disabled={Boolean(sending)}
+                      onClick={() => submitAnswer({ answer_index: i }, i)}
                     >
                       <span className="shape">{OPTION_SHAPES[optionColor(currentQuestion, i)]}</span>
                       <span>{optionLabel(currentQuestion, i, t)}</span>
@@ -641,7 +782,8 @@ export default function Play() {
                 <div className="scale-play">
                   <Scale
                     meta={currentQuestion.meta}
-                    onPick={(value) => submitAnswer({ answer_index: value })}
+                    chosen={sending?.index}
+                    onPick={(value) => submitAnswer({ answer_index: value }, value)}
                   />
                 </div>
               )}
@@ -661,7 +803,7 @@ export default function Play() {
                     placeholder={t('הקלידו תשובה קצרה...')}
                     autoFocus
                   />
-                  <button className="btn light xl" disabled={!cloudText.trim()}>{t('שליחה ☁️')}</button>
+                  <button className="btn light xl" disabled={!cloudText.trim() || Boolean(sending)}>{t('שליחה ☁️')}</button>
                 </form>
               )}
 
@@ -678,7 +820,11 @@ export default function Play() {
                       </span>
                     </div>
                   ))}
-                  <button className="btn light xl" onClick={() => submitAnswer({ answer: { order: rankOrder } })}>
+                  <button
+                    className="btn light xl"
+                    disabled={Boolean(sending)}
+                    onClick={() => submitAnswer({ answer: { order: rankOrder } })}
+                  >
                     {t('שליחת הסדר')}
                   </button>
                 </div>
@@ -702,7 +848,7 @@ export default function Play() {
                   </div>
                   <button
                     className="btn light xl"
-                    disabled={!tapPos}
+                    disabled={!tapPos || Boolean(sending)}
                     onClick={() => submitAnswer({ answer: tapPos })}
                   >
                     {t('שליחת המיקום')}
