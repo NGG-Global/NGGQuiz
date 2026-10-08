@@ -373,8 +373,11 @@ export default function Host({ user }) {
   // reveals the answer, exactly as if the button had been pressed. The
   // deadline is enforced in the database as well, so a late answer never
   // scores even if this timer misses (host screen closed, tab throttled).
+  // Not in live mode: there the presenter talks the room through the
+  // results and reveals in their own time, so the timer only closes
+  // answering and the reveal waits for the button.
   useEffect(() => {
-    if (!isHost || !timeLimit) return
+    if (!isHost || !timeLimit || live) return
     const deadline = deadlineMs(session.question_started_at, timeLimit)
     if (deadline == null) return
     const wait = deadline - serverNow()
@@ -384,7 +387,7 @@ export default function Host({ user }) {
     }
     const timer = setTimeout(reveal, wait)
     return () => clearTimeout(timer)
-  }, [isHost, timeLimit, session?.question_started_at, currentQuestion?.id, clockReady]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isHost, timeLimit, live, session?.question_started_at, currentQuestion?.id, clockReady]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function startQuestion(index) {
     return act(async () => {
@@ -655,8 +658,17 @@ export default function Host({ user }) {
             </>
           )}
 
+          {/* live mode, time up: answering is closed and the room is waiting
+              for the presenter, so the screen says so and the button calls */}
+          {live && timeLimit && timeLeft === 0 && (
+            <p className="stage-subtitle time-up-note">{t('⏱ הזמן נגמר - המענה נסגר')}</p>
+          )}
           {isHost && (
-            <button className="btn light xl" disabled={acting} onClick={reveal}>
+            <button
+              className={`btn light xl${live && timeLimit && timeLeft === 0 ? ' call' : ''}`}
+              disabled={acting}
+              onClick={reveal}
+            >
               {survey ? t('הצגת התוצאות') : t('חשיפת התשובה')}
             </button>
           )}

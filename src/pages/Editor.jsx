@@ -658,7 +658,9 @@ export default function Editor() {
 
           <p className="muted small timer-hint">
             {q.time_limit
-              ? t('⏱ השאלה תיסגר אוטומטית אחרי {seconds} שניות והתשובה תיחשף.', { seconds: q.time_limit })
+              ? live
+                ? t('⏱ המענה ייסגר אחרי {seconds} שניות. במצב חי התשובה נחשפת רק בלחיצת המנחה.', { seconds: q.time_limit })
+                : t('⏱ השאלה תיסגר אוטומטית אחרי {seconds} שניות והתשובה תיחשף.', { seconds: q.time_limit })
               : t('ללא הגבלת זמן - המנחה חושף את התשובה בלחיצה.')}
             {questions.length > 1 && (
               <button type="button" className="link-btn" onClick={() => applyTimerToAll(q.time_limit ?? null)}>

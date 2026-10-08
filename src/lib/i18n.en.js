@@ -27,6 +27,8 @@ export const EN = {
   "+ יצירה חדשה": "+ Create new",
   "+ תיקייה חדשה": "+ New folder",
   "+{points} נקודות": "+{points} points",
+  "⏱ המענה ייסגר אחרי {seconds} שניות. במצב חי התשובה נחשפת רק בלחיצת המנחה.": "⏱ Answering closes after {seconds} seconds. In live mode the answer is revealed only when the presenter clicks.",
+  "⏱ הזמן נגמר - המענה נסגר": "⏱ Time is up - answering is closed",
   "⏱ השאלה תיסגר אוטומטית אחרי {seconds} שניות והתשובה תיחשף.": "⏱ The question closes automatically after {seconds} seconds and the answer is revealed.",
   "☁️ המשתתפים יקלידו תשובה חופשית קצרה, והמסך המוקרן יבנה ענן מילים חי. אין תשובה נכונה ואין ניקוד.": "☁️ Players type a short free-text answer, and the projected screen builds a live word cloud. No correct answer and no scoring.",
   "☁️ ענו מהטלפון - הענן נבנה בזמן אמת": "☁️ Answer from your phone - the cloud builds in real time",
