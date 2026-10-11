@@ -23,6 +23,8 @@ import { quizFlags, LIVE_BAR_TYPES, ANSWER_SLIDE_TYPES } from '../lib/quizMode'
 import { fetchAll, mergeById, upsertById } from '../lib/fetchAll'
 import { isMultiSelect, wordEntries, answerTexts, optionCounts as countOptions } from '../lib/multiAnswer'
 import { useI18n } from '../lib/i18n.js'
+import { advanceAction, isAdvanceKey, ADVANCE_COOLDOWN_MS } from '../lib/projector.js'
+import { useFitToScreen } from '../lib/useFitToScreen.js'
 
 const READ_TIMEOUT_MS = 10000
 const WRITE_TIMEOUT_MS = 10000
@@ -93,6 +95,7 @@ export default function Host({ user }) {
   const actingRef = useRef(false)
   const revealDone = useRef(null)
   const currentQuestionId = useRef(null) // read by the resync, which outlives renders
+  const lastStepAt = useRef(0) // when the screen last moved on, for the Enter key's cooldown
 
   const currentQuestion = useMemo(
     () => (session && session.current_index >= 0 ? questions[session.current_index] : null),
@@ -409,6 +412,37 @@ export default function Host({ user }) {
     return act(() => updateStatus(status))
   }
 
+  // the projected screen always fits the window, so the host's button never
+  // sits below the fold on a projector or a laptop shared to a screen
+  const { stageRef, contentRef, scale: screenScale } = useFitToScreen(Boolean(session && quiz))
+
+  useEffect(() => {
+    lastStepAt.current = Date.now()
+  }, [session?.status, session?.current_index])
+
+  // Enter does what the screen's main button does, for a host presenting
+  // from the keyboard or with a clicker set to send Enter
+  useEffect(() => {
+    if (!isHost) return
+    const onKey = (e) => {
+      if (!isAdvanceKey(e) || actingRef.current) return
+      const action = advanceAction({
+        status: session.status,
+        players: players.length,
+        isLast: session.current_index >= questions.length - 1,
+      })
+      if (!action) return
+      e.preventDefault()
+      if (Date.now() - lastStepAt.current < ADVANCE_COOLDOWN_MS) return
+      if (action === 'start') startQuestion(0)
+      else if (action === 'reveal') reveal()
+      else if (action === 'next') startQuestion(session.current_index + 1)
+      else if (action === 'finish') setStatus('finished')
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [isHost, session?.status, session?.current_index, currentQuestion?.id, players.length, questions.length]) // eslint-disable-line react-hooks/exhaustive-deps
+
   if (!session || !quiz) {
     return (
       <div className="center-screen">
@@ -505,447 +539,449 @@ export default function Host({ user }) {
   }
 
   return (
-    <div className={`stage${live ? ' live' : ''}`}>
+    <div className={`stage${live ? ' live' : ''}${screenScale ? ' fit' : ''}`} ref={stageRef}>
       {error && <div className="error-box floating">{error}</div>}
-
-      {session.status === 'lobby' && (
-        <div className="stage-inner" key="lobby">
-          {quiz.logo_url && <img className="client-logo" src={quiz.logo_url} alt={t('לוגו הלקוח')} />}
-          <h1 className="stage-title">{quiz.title}</h1>
-          {quiz.subtitle && <h2 className="stage-subtitle">{quiz.subtitle}</h2>}
-          {anonymous ? (
-            // no names in anonymous mode: the join code and the QR side by
-            // side, and one count the whole room can read
-            <div className="lobby-join">
-              <div className="lobby-join-info">
+      {/* outside the scaled content, so it still rains over the whole screen */}
+      {session.status === 'finished' && scored && <Confetti />}
+      <div className="stage-fit" ref={contentRef} style={screenScale && screenScale < 1 ? { scale: String(screenScale) } : undefined}>
+        {session.status === 'lobby' && (
+          <div className="stage-inner" key="lobby">
+            {quiz.logo_url && <img className="client-logo" src={quiz.logo_url} alt={t('לוגו הלקוח')} />}
+            <h1 className="stage-title">{quiz.title}</h1>
+            {quiz.subtitle && <h2 className="stage-subtitle">{quiz.subtitle}</h2>}
+            {anonymous ? (
+              // no names in anonymous mode: the join code and the QR side by
+              // side, and one count the whole room can read
+              <div className="lobby-join">
+                <div className="lobby-join-info">
+                  <div className="pin-banner big glow">
+                    {t('קוד הצטרפות:')} <span className="pin">{session.pin}</span>
+                  </div>
+                  <p className="join-url" dir="ltr">{playLink(session.pin)}</p>
+                  <div className="join-counter">
+                    <span className="join-counter-value" key={players.length}>{players.length}</span>
+                    <span className="join-counter-label">
+                      {players.length === 1 ? t('משתתף הצטרף') : t('משתתפים הצטרפו')}
+                    </span>
+                  </div>
+                </div>
+                {qr && <img className="qr-big" src={qr} alt={t('קוד QR להצטרפות')} />}
+              </div>
+            ) : (
+              <>
                 <div className="pin-banner big glow">
                   {t('קוד הצטרפות:')} <span className="pin">{session.pin}</span>
                 </div>
                 <p className="join-url" dir="ltr">{playLink(session.pin)}</p>
-                <div className="join-counter">
-                  <span className="join-counter-value" key={players.length}>{players.length}</span>
-                  <span className="join-counter-label">
-                    {players.length === 1 ? t('משתתף הצטרף') : t('משתתפים הצטרפו')}
-                  </span>
-                </div>
-              </div>
-              {qr && <img className="qr-big" src={qr} alt={t('קוד QR להצטרפות')} />}
-            </div>
-          ) : (
-            <>
-              <div className="pin-banner big glow">
-                {t('קוד הצטרפות:')} <span className="pin">{session.pin}</span>
-              </div>
-              <p className="join-url" dir="ltr">{playLink(session.pin)}</p>
-              {qr && <img className="qr-big" src={qr} alt={t('קוד QR להצטרפות')} />}
-              <h3>{t('משתתפים ({count})', { count: players.length })}</h3>
-            </>
-          )}
-          {anonymous ? null : teamsOn ? (
-            <div className="team-lobby">
-              {quiz.teams.map((t, ti) => {
-                const members = players.filter((p) => p.team === t)
-                const color = TEAM_COLORS[ti % TEAM_COLORS.length]
-                return (
-                  <div className="team-group" key={t} style={{ borderColor: `${color}88` }}>
-                    <div className="team-group-head" style={{ color }}>
-                      <span className="dot big" style={{ background: color }} /> {t} ({members.length})
+                {qr && <img className="qr-big" src={qr} alt={t('קוד QR להצטרפות')} />}
+                <h3>{t('משתתפים ({count})', { count: players.length })}</h3>
+              </>
+            )}
+            {anonymous ? null : teamsOn ? (
+              <div className="team-lobby">
+                {quiz.teams.map((t, ti) => {
+                  const members = players.filter((p) => p.team === t)
+                  const color = TEAM_COLORS[ti % TEAM_COLORS.length]
+                  return (
+                    <div className="team-group" key={t} style={{ borderColor: `${color}88` }}>
+                      <div className="team-group-head" style={{ color }}>
+                        <span className="dot big" style={{ background: color }} /> {t} ({members.length})
+                      </div>
+                      <div className="player-chips">
+                        {members.map((p, i) => (
+                          <span className="chip pop" style={{ '--i': i % 12 }} key={p.id}>{p.nickname}</span>
+                        ))}
+                      </div>
                     </div>
-                    <div className="player-chips">
-                      {members.map((p, i) => (
-                        <span className="chip pop" style={{ '--i': i % 12 }} key={p.id}>{p.nickname}</span>
-                      ))}
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          ) : (
-            <div className="player-chips">
-              {players.map((p, i) => (
-                <span className="chip pop" style={{ '--i': i % 12 }} key={p.id}>{p.nickname}</span>
-              ))}
-              {players.length === 0 && <span className="waiting-dots">{t('ממתינים למצטרפים')}</span>}
-            </div>
-          )}
-          {isHost && (
-            <button
-              className="btn primary xl"
-              disabled={players.length === 0 || acting}
-              onClick={() => startQuestion(0)}
-            >
-              {t('התחלת החידון')}
-            </button>
-          )}
-        </div>
-      )}
-
-      {session.status === 'question' && currentQuestion && (
-        <div className="stage-inner" key={`q-${session.current_index}`}>
-          <div className="question-meta">
-            <span className="meta-pill">{t('שאלה {number} / {total}', { number: session.current_index + 1, total: questions.length })}</span>
-            {timeLimit ? <Countdown left={timeLeft ?? timeLimit} /> : <Elapsed since={session.question_started_at} />}
-            <span className="meta-pill">{t('ענו: {answered}/{total}', { answered: currentAnswers.length, total: players.length })}</span>
-          </div>
-          {timeLimit && (
-            <div className="timer-bar" aria-hidden="true">
-              <div style={{ width: `${((timeLeft ?? timeLimit) / timeLimit) * 100}%` }} />
-            </div>
-          )}
-          <h1 className="stage-title">{currentQuestion.text}</h1>
-          {multiSelect && <p className="stage-subtitle multi-note">{t('☑️ אפשר לבחור יותר מאפשרות אחת')}</p>}
-
-          {liveBars ? (
-            // the chart stays mounted for the whole question, so each answer
-            // eases the bars up instead of redrawing them; no correctIndex,
-            // and colours by position only, so nothing hints at the answer
-            <PollChart
-              live
-              options={optionLabels}
-              counts={optionCounts}
-              colorIndexes={optionColors}
-              reference={false}
-              respondents={respondents}
-            />
-          ) : (hasCorrectOption(currentQuestion.qtype) || currentQuestion.qtype === 'poll') && (
-            <div className={`options-grid${currentQuestion.options.length > 4 ? ' many' : ''}`}>
-              {currentQuestion.options.map((_, i) => (
-                <div className={`option-tile color-${optionColor(currentQuestion, i)}`} style={{ '--i': i }} key={i}>
-                  <span className="shape">{OPTION_SHAPES[optionColor(currentQuestion, i)]}</span>
-                  <span>{optionLabel(currentQuestion, i, t)}</span>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {currentQuestion.qtype === 'scale' && (
-            <>
-              <p className="stage-subtitle">{t('📏 בחרו את המספר שמייצג אתכם במכשיר שלכם')}</p>
-              <Scale meta={currentQuestion.meta} />
-            </>
-          )}
-
-          {currentQuestion.qtype === 'word_cloud' && (
-            <>
-              <p className="stage-subtitle">
-                {maxWords > 1
-                  ? t('☁️ ענו מהטלפון, עד {count} מילים - הענן נבנה בזמן אמת', { count: maxWords })
-                  : t('☁️ ענו מהטלפון - הענן נבנה בזמן אמת')}
-              </p>
-              <WordCloud texts={cloudTexts} />
-            </>
-          )}
-
-          {currentQuestion.qtype === 'ranking' && (
-            <>
-              <p className="stage-subtitle">{t('🔢 סדרו את הפריטים בסדר הנכון במכשיר שלכם')}</p>
-              <div className="rank-board">
-                {neutralOrder.map((item, i) => (
-                  <div className="rank-item neutral" style={{ '--i': i }} key={item}>
-                    <span className="rank-text">{item}</span>
-                  </div>
+                  )
+                })}
+              </div>
+            ) : (
+              <div className="player-chips">
+                {players.map((p, i) => (
+                  <span className="chip pop" style={{ '--i': i % 12 }} key={p.id}>{p.nickname}</span>
                 ))}
-              </div>
-            </>
-          )}
-
-          {currentQuestion.qtype === 'hotspot' && (
-            <>
-              <p className="stage-subtitle">{t('🎯 הקישו על המיקום הנכון במכשיר שלכם')}</p>
-              <div className="hotspot-frame stage-image">
-                <img src={currentQuestion.meta?.image_url} alt={t('תמונת השאלה')} draggable={false} />
-              </div>
-            </>
-          )}
-
-          {/* live mode, time up: answering is closed and the room is waiting
-              for the presenter, so the screen says so and the button calls */}
-          {live && timeLimit && timeLeft === 0 && (
-            <p className="stage-subtitle time-up-note">{t('⏱ הזמן נגמר - המענה נסגר')}</p>
-          )}
-          {isHost && (
-            <button
-              className={`btn light xl${live && timeLimit && timeLeft === 0 ? ' call' : ''}`}
-              disabled={acting}
-              onClick={reveal}
-            >
-              {survey ? t('הצגת התוצאות') : t('חשיפת התשובה')}
-            </button>
-          )}
-        </div>
-      )}
-
-      {session.status === 'reveal' && currentQuestion && answerSlide && (
-        <div className="stage-inner wide answer-slide" key={`r-${session.current_index}`}>
-          <p className="answer-question">{currentQuestion.text}</p>
-          <div className="answer-panel">
-            <span className="answer-label">{t('התשובה הנכונה')}</span>
-            <span className={`answer-text${answerLength}`}>{answerText}</span>
-          </div>
-          <div
-            className={`answer-body${currentQuestion.explanation ? ' with-explanation' : ''}${currentQuestion.options.length > 4 ? ' many' : ''}`}
-          >
-            {currentQuestion.explanation && (
-              <div className={`answer-explanation${explanationSize}`}>
-                <Explanation text={currentQuestion.explanation} />
+                {players.length === 0 && <span className="waiting-dots">{t('ממתינים למצטרפים')}</span>}
               </div>
             )}
-            <div className="answer-results">
-              {share ? (
-                <div className="answer-stat">
-                  <span className="answer-stat-value">{t('{percent}% ענו נכון', { percent: share.percent })}</span>
-                  <span className="answer-stat-detail">
-                    {t('{correct} מתוך {total} משתתפים', { correct: share.correct, total: share.total })}
-                  </span>
-                </div>
-              ) : (
-                <p className="answer-stat-detail">{t('לא התקבלו תשובות לשאלה זו.')}</p>
-              )}
+            {isHost && (
+              <button
+                className="btn primary xl"
+                disabled={players.length === 0 || acting}
+                onClick={() => startQuestion(0)}
+              >
+                {t('התחלת החידון')}
+              </button>
+            )}
+          </div>
+        )}
+
+        {session.status === 'question' && currentQuestion && (
+          <div className="stage-inner" key={`q-${session.current_index}`}>
+            <div className="question-meta">
+              <span className="meta-pill">{t('שאלה {number} / {total}', { number: session.current_index + 1, total: questions.length })}</span>
+              {timeLimit ? <Countdown left={timeLeft ?? timeLimit} /> : <Elapsed since={session.question_started_at} />}
+              <span className="meta-pill">{t('ענו: {answered}/{total}', { answered: currentAnswers.length, total: players.length })}</span>
+            </div>
+            {timeLimit && (
+              <div className="timer-bar" aria-hidden="true">
+                <div style={{ width: `${((timeLeft ?? timeLimit) / timeLimit) * 100}%` }} />
+              </div>
+            )}
+            <h1 className="stage-title">{currentQuestion.text}</h1>
+            {multiSelect && <p className="stage-subtitle multi-note">{t('☑️ אפשר לבחור יותר מאפשרות אחת')}</p>}
+
+            {liveBars ? (
+              // the chart stays mounted for the whole question, so each answer
+              // eases the bars up instead of redrawing them; no correctIndex,
+              // and colours by position only, so nothing hints at the answer
               <PollChart
+                live
                 options={optionLabels}
                 counts={optionCounts}
-                correctIndex={currentQuestion.correct_index}
                 colorIndexes={optionColors}
                 reference={false}
+                respondents={respondents}
               />
-            </div>
-          </div>
-          {nextButtons()}
-        </div>
-      )}
-
-      {session.status === 'reveal' && currentQuestion && !answerSlide && (
-        <div className="stage-inner" key={`r-${session.current_index}`}>
-          <h1 className="stage-title">{currentQuestion.text}</h1>
-
-          {hasCorrectOption(currentQuestion.qtype) && (
-            <div className={`options-grid${currentQuestion.options.length > 4 ? ' many' : ''}`}>
-              {currentQuestion.options.map((_, i) => {
-                const correct = i === currentQuestion.correct_index
-                return (
-                  <div
-                    className={`option-tile color-${optionColor(currentQuestion, i)} ${correct ? 'correct' : 'dimmed'}`}
-                    style={{ '--i': i }}
-                    key={i}
-                  >
+            ) : (hasCorrectOption(currentQuestion.qtype) || currentQuestion.qtype === 'poll') && (
+              <div className={`options-grid${currentQuestion.options.length > 4 ? ' many' : ''}`}>
+                {currentQuestion.options.map((_, i) => (
+                  <div className={`option-tile color-${optionColor(currentQuestion, i)}`} style={{ '--i': i }} key={i}>
                     <span className="shape">{OPTION_SHAPES[optionColor(currentQuestion, i)]}</span>
-                    <span>{optionLabel(currentQuestion, i, t)} {correct && '✓'}</span>
-                    <div className="bar-track">
-                      <div className="bar" style={{ width: `${(optionCounts[i] / maxOptionCount) * 100}%` }} />
-                    </div>
-                    <span className="count">{optionCounts[i]}</span>
+                    <span>{optionLabel(currentQuestion, i, t)}</span>
                   </div>
-                )
-              })}
-            </div>
-          )}
-
-          {currentQuestion.qtype === 'poll' && (
-            <PollChart
-              options={currentQuestion.options || []}
-              counts={optionCounts}
-              reference={!survey && !multiSelect}
-              respondents={respondents}
-            />
-          )}
-
-          {currentQuestion.qtype === 'scale' && (
-            <>
-              <PollChart options={scalePointList.map(String)} counts={scaleTally} scale />
-              <div className="survey-scale-ends muted small">
-                <span>{currentQuestion.meta?.low_label}</span>
-                <span>{currentQuestion.meta?.high_label}</span>
+                ))}
               </div>
-              {scaleStats && (
-                <div className="survey-metrics compact">
-                  <div className="metric"><span>{scaleStats.mean.toFixed(2)}</span><small>{t('ממוצע')}</small></div>
-                  <div className="metric"><span>{scaleStats.median}</span><small>{t('חציון')}</small></div>
-                  <div className="metric"><span>{scaleStats.modes.join(', ')}</span><small>{t('השכיח')}</small></div>
-                  <div className="metric"><span>{scaleStats.sd.toFixed(2)}</span><small>{t('סטיית תקן')}</small></div>
-                  <div className="metric"><span>{scaleStats.n}</span><small>{t('עונים')}</small></div>
+            )}
+
+            {currentQuestion.qtype === 'scale' && (
+              <>
+                <p className="stage-subtitle">{t('📏 בחרו את המספר שמייצג אתכם במכשיר שלכם')}</p>
+                <Scale meta={currentQuestion.meta} />
+              </>
+            )}
+
+            {currentQuestion.qtype === 'word_cloud' && (
+              <>
+                <p className="stage-subtitle">
+                  {maxWords > 1
+                    ? t('☁️ ענו מהטלפון, עד {count} מילים - הענן נבנה בזמן אמת', { count: maxWords })
+                    : t('☁️ ענו מהטלפון - הענן נבנה בזמן אמת')}
+                </p>
+                <WordCloud texts={cloudTexts} />
+              </>
+            )}
+
+            {currentQuestion.qtype === 'ranking' && (
+              <>
+                <p className="stage-subtitle">{t('🔢 סדרו את הפריטים בסדר הנכון במכשיר שלכם')}</p>
+                <div className="rank-board">
+                  {neutralOrder.map((item, i) => (
+                    <div className="rank-item neutral" style={{ '--i': i }} key={item}>
+                      <span className="rank-text">{item}</span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {currentQuestion.qtype === 'hotspot' && (
+              <>
+                <p className="stage-subtitle">{t('🎯 הקישו על המיקום הנכון במכשיר שלכם')}</p>
+                <div className="hotspot-frame stage-image">
+                  <img src={currentQuestion.meta?.image_url} alt={t('תמונת השאלה')} draggable={false} />
+                </div>
+              </>
+            )}
+
+            {/* live mode, time up: answering is closed and the room is waiting
+                for the presenter, so the screen says so and the button calls */}
+            {live && timeLimit && timeLeft === 0 && (
+              <p className="stage-subtitle time-up-note">{t('⏱ הזמן נגמר - המענה נסגר')}</p>
+            )}
+            {isHost && (
+              <button
+                className={`btn light xl${live && timeLimit && timeLeft === 0 ? ' call' : ''}`}
+                disabled={acting}
+                onClick={reveal}
+              >
+                {survey ? t('הצגת התוצאות') : t('חשיפת התשובה')}
+              </button>
+            )}
+          </div>
+        )}
+
+        {session.status === 'reveal' && currentQuestion && answerSlide && (
+          <div className="stage-inner wide answer-slide" key={`r-${session.current_index}`}>
+            <p className="answer-question">{currentQuestion.text}</p>
+            <div className="answer-panel">
+              <span className="answer-label">{t('התשובה הנכונה')}</span>
+              <span className={`answer-text${answerLength}`}>{answerText}</span>
+            </div>
+            <div
+              className={`answer-body${currentQuestion.explanation ? ' with-explanation' : ''}${currentQuestion.options.length > 4 ? ' many' : ''}`}
+            >
+              {currentQuestion.explanation && (
+                <div className={`answer-explanation${explanationSize}`}>
+                  <Explanation text={currentQuestion.explanation} />
                 </div>
               )}
-            </>
-          )}
-
-          {currentQuestion.qtype === 'word_cloud' && <WordCloud texts={cloudTexts} />}
-
-          {currentQuestion.qtype === 'ranking' && (
-            <>
-              <p className="stage-subtitle">{t('הסדר הנכון:')}</p>
-              <div className="rank-board">
-                {(currentQuestion.options || []).map((item, i) => (
-                  <div className="rank-item revealed" style={{ '--i': i }} key={item}>
-                    <span className="rank-num">{i + 1}</span>
-                    <span className="rank-text">{item}</span>
+              <div className="answer-results">
+                {share ? (
+                  <div className="answer-stat">
+                    <span className="answer-stat-value">{t('{percent}% ענו נכון', { percent: share.percent })}</span>
+                    <span className="answer-stat-detail">
+                      {t('{correct} מתוך {total} משתתפים', { correct: share.correct, total: share.total })}
+                    </span>
                   </div>
-                ))}
+                ) : (
+                  <p className="answer-stat-detail">{t('לא התקבלו תשובות לשאלה זו.')}</p>
+                )}
+                <PollChart
+                  options={optionLabels}
+                  counts={optionCounts}
+                  correctIndex={currentQuestion.correct_index}
+                  colorIndexes={optionColors}
+                  reference={false}
+                />
               </div>
-              {rankingAvgAccuracy != null && (
-                <p className="stage-subtitle">{t('🎯 דיוק ממוצע: {percent}%', { percent: rankingAvgAccuracy })}</p>
-              )}
-            </>
-          )}
-
-          {currentQuestion.qtype === 'hotspot' && (
-            <div className="hotspot-frame stage-image">
-              <img src={currentQuestion.meta?.image_url} alt={t('תמונת השאלה')} draggable={false} />
-              {currentAnswers.map((a) =>
-                a.answer?.x != null ? (
-                  <span
-                    key={a.id}
-                    className="hotspot-marker guess"
-                    style={{ left: `${a.answer.x}%`, top: `${a.answer.y}%` }}
-                  />
-                ) : null
-              )}
-              <span
-                className="hotspot-marker target pulse"
-                style={{ left: `${currentQuestion.meta?.x}%`, top: `${currentQuestion.meta?.y}%` }}
-              />
             </div>
-          )}
+            {nextButtons()}
+          </div>
+        )}
 
-          {currentQuestion.explanation && (
-            <div className="explain-box">💡 {currentQuestion.explanation}</div>
-          )}
-          {nextButtons()}
-        </div>
-      )}
+        {session.status === 'reveal' && currentQuestion && !answerSlide && (
+          <div className="stage-inner" key={`r-${session.current_index}`}>
+            <h1 className="stage-title">{currentQuestion.text}</h1>
 
-      {/* an unscored quiz never opens the leaderboard; should the state be
-          reached anyway, no names or scores are shown - only the way on */}
-      {session.status === 'leaderboard' && !scored && (
-        <div className="stage-inner" key={`l-${session.current_index}`}>
-          <h1 className="stage-title">{quiz.title}</h1>
-          {nextButtons()}
-        </div>
-      )}
-
-      {session.status === 'leaderboard' && scored && (
-        <div className="stage-inner" key={`l-${session.current_index}`}>
-          <h1 className="stage-title">{teamsOn ? t('מצב הקבוצות') : t('טבלת המובילים')}</h1>
-          {teamScoreBoard()}
-          <ol className="leaderboard">
-            {sorted.slice(0, teamsOn ? 5 : 10).map((p, i) => (
-              <li key={p.id} style={{ '--i': i }} className={i < 3 ? `top-${i + 1}` : ''}>
-                <span className="rank">{i + 1}</span>
-                <span className="name">{p.nickname}{p.team ? ` · ${p.team}` : ''}</span>
-                <span className="score">{p.score}</span>
-              </li>
-            ))}
-          </ol>
-          {isHost && (
-            isLast ? (
-              <button className="btn primary xl" disabled={acting} onClick={() => setStatus('finished')}>
-                {t('סיום החידון')}
-              </button>
-            ) : (
-              <button className="btn primary xl" disabled={acting} onClick={() => startQuestion(session.current_index + 1)}>
-                {t('השאלה הבאה')}
-              </button>
-            )
-          )}
-        </div>
-      )}
-
-      {session.status === 'finished' && survey && (
-        <div className="stage-inner wide" key="finished-survey">
-          {quiz.logo_url && <img className="client-logo small" src={quiz.logo_url} alt={t('לוגו הלקוח')} />}
-          <h1 className="stage-title">📋 {quiz.title}</h1>
-          <h2 className="stage-subtitle">{t('סיכום הסקר')}</h2>
-          <SurveyConclusion questions={questions} answers={answers} participants={players.length} />
-          {isHost && (
-            <button className="btn ghost light-ghost" onClick={() => navigate('/')}>{t('חזרה לספרייה')}</button>
-          )}
-        </div>
-      )}
-
-      {session.status === 'finished' && live && (
-        <div className="stage-inner wide" key="finished-live">
-          {quiz.logo_url && <img className="client-logo small" src={quiz.logo_url} alt={t('לוגו הלקוח')} />}
-          <h1 className="stage-title">⚡ {quiz.title}</h1>
-          <h2 className="stage-subtitle">{t('סיכום החידון')}</h2>
-          <LiveConclusion questions={questions} answers={answers} participants={players.length} />
-          {isHost && (
-            <button className="btn ghost light-ghost" onClick={() => navigate('/')}>{t('חזרה לספרייה')}</button>
-          )}
-        </div>
-      )}
-
-      {session.status === 'finished' && scored && (
-        <div className="stage-inner" key="finished">
-          <Confetti />
-          {quiz.logo_url && <img className="client-logo small" src={quiz.logo_url} alt={t('לוגו הלקוח')} />}
-          <h1 className="stage-title">🏆 {quiz.title}</h1>
-          <h2 className="stage-subtitle">{t('התוצאות הסופיות')}</h2>
-
-          {teamsOn ? (
-            <>
-              <div className="podium">
-                {[1, 0, 2].map((rank) =>
-                  teamTotals[rank] ? (
-                    <div className={`podium-slot place-${rank + 1}`} key={teamTotals[rank].name}>
-                      <div className="podium-medal">{['🥇', '🥈', '🥉'][rank]}</div>
-                      <div className="podium-name">
-                        <span className="dot big" style={{ background: teamTotals[rank].color }} />{' '}
-                        {teamTotals[rank].name}
+            {hasCorrectOption(currentQuestion.qtype) && (
+              <div className={`options-grid${currentQuestion.options.length > 4 ? ' many' : ''}`}>
+                {currentQuestion.options.map((_, i) => {
+                  const correct = i === currentQuestion.correct_index
+                  return (
+                    <div
+                      className={`option-tile color-${optionColor(currentQuestion, i)} ${correct ? 'correct' : 'dimmed'}`}
+                      style={{ '--i': i }}
+                      key={i}
+                    >
+                      <span className="shape">{OPTION_SHAPES[optionColor(currentQuestion, i)]}</span>
+                      <span>{optionLabel(currentQuestion, i, t)} {correct && '✓'}</span>
+                      <div className="bar-track">
+                        <div className="bar" style={{ width: `${(optionCounts[i] / maxOptionCount) * 100}%` }} />
                       </div>
-                      <div className="podium-block">
-                        <div className="podium-rank">{rank + 1}</div>
-                        <div className="podium-score">{teamTotals[rank].score}</div>
-                      </div>
+                      <span className="count">{optionCounts[i]}</span>
                     </div>
+                  )
+                })}
+              </div>
+            )}
+
+            {currentQuestion.qtype === 'poll' && (
+              <PollChart
+                options={currentQuestion.options || []}
+                counts={optionCounts}
+                reference={!survey && !multiSelect}
+                respondents={respondents}
+              />
+            )}
+
+            {currentQuestion.qtype === 'scale' && (
+              <>
+                <PollChart options={scalePointList.map(String)} counts={scaleTally} scale />
+                <div className="survey-scale-ends muted small">
+                  <span>{currentQuestion.meta?.low_label}</span>
+                  <span>{currentQuestion.meta?.high_label}</span>
+                </div>
+                {scaleStats && (
+                  <div className="survey-metrics compact">
+                    <div className="metric"><span>{scaleStats.mean.toFixed(2)}</span><small>{t('ממוצע')}</small></div>
+                    <div className="metric"><span>{scaleStats.median}</span><small>{t('חציון')}</small></div>
+                    <div className="metric"><span>{scaleStats.modes.join(', ')}</span><small>{t('השכיח')}</small></div>
+                    <div className="metric"><span>{scaleStats.sd.toFixed(2)}</span><small>{t('סטיית תקן')}</small></div>
+                    <div className="metric"><span>{scaleStats.n}</span><small>{t('עונים')}</small></div>
+                  </div>
+                )}
+              </>
+            )}
+
+            {currentQuestion.qtype === 'word_cloud' && <WordCloud texts={cloudTexts} />}
+
+            {currentQuestion.qtype === 'ranking' && (
+              <>
+                <p className="stage-subtitle">{t('הסדר הנכון:')}</p>
+                <div className="rank-board">
+                  {(currentQuestion.options || []).map((item, i) => (
+                    <div className="rank-item revealed" style={{ '--i': i }} key={item}>
+                      <span className="rank-num">{i + 1}</span>
+                      <span className="rank-text">{item}</span>
+                    </div>
+                  ))}
+                </div>
+                {rankingAvgAccuracy != null && (
+                  <p className="stage-subtitle">{t('🎯 דיוק ממוצע: {percent}%', { percent: rankingAvgAccuracy })}</p>
+                )}
+              </>
+            )}
+
+            {currentQuestion.qtype === 'hotspot' && (
+              <div className="hotspot-frame stage-image">
+                <img src={currentQuestion.meta?.image_url} alt={t('תמונת השאלה')} draggable={false} />
+                {currentAnswers.map((a) =>
+                  a.answer?.x != null ? (
+                    <span
+                      key={a.id}
+                      className="hotspot-marker guess"
+                      style={{ left: `${a.answer.x}%`, top: `${a.answer.y}%` }}
+                    />
                   ) : null
                 )}
+                <span
+                  className="hotspot-marker target pulse"
+                  style={{ left: `${currentQuestion.meta?.x}%`, top: `${currentQuestion.meta?.y}%` }}
+                />
               </div>
-              {teamTotals.length > 3 && teamScoreBoard()}
-              <p className="stage-subtitle">{t('המצטיינים האישיים:')}</p>
-              <ol className="leaderboard compact">
-                {sorted.slice(0, 5).map((p, i) => (
-                  <li key={p.id} style={{ '--i': i }}>
-                    <span className="rank">{i + 1}</span>
-                    <span className="name">{p.nickname}{p.team ? ` · ${p.team}` : ''}</span>
-                    <span className="score">{p.score}</span>
-                  </li>
-                ))}
-              </ol>
-            </>
-          ) : (
-            <>
-              <div className="podium">
-                {[1, 0, 2].map((rank) =>
-                  sorted[rank] ? (
-                    <div className={`podium-slot place-${rank + 1}`} key={sorted[rank].id}>
-                      <div className="podium-medal">{['🥇', '🥈', '🥉'][rank]}</div>
-                      <div className="podium-name">{sorted[rank].nickname}</div>
-                      <div className="podium-block">
-                        <div className="podium-rank">{rank + 1}</div>
-                        <div className="podium-score">{sorted[rank].score}</div>
+            )}
+
+            {currentQuestion.explanation && (
+              <div className="explain-box">💡 {currentQuestion.explanation}</div>
+            )}
+            {nextButtons()}
+          </div>
+        )}
+
+        {/* an unscored quiz never opens the leaderboard; should the state be
+            reached anyway, no names or scores are shown - only the way on */}
+        {session.status === 'leaderboard' && !scored && (
+          <div className="stage-inner" key={`l-${session.current_index}`}>
+            <h1 className="stage-title">{quiz.title}</h1>
+            {nextButtons()}
+          </div>
+        )}
+
+        {session.status === 'leaderboard' && scored && (
+          <div className="stage-inner" key={`l-${session.current_index}`}>
+            <h1 className="stage-title">{teamsOn ? t('מצב הקבוצות') : t('טבלת המובילים')}</h1>
+            {teamScoreBoard()}
+            <ol className="leaderboard">
+              {sorted.slice(0, teamsOn ? 5 : 10).map((p, i) => (
+                <li key={p.id} style={{ '--i': i }} className={i < 3 ? `top-${i + 1}` : ''}>
+                  <span className="rank">{i + 1}</span>
+                  <span className="name">{p.nickname}{p.team ? ` · ${p.team}` : ''}</span>
+                  <span className="score">{p.score}</span>
+                </li>
+              ))}
+            </ol>
+            {isHost && (
+              isLast ? (
+                <button className="btn primary xl" disabled={acting} onClick={() => setStatus('finished')}>
+                  {t('סיום החידון')}
+                </button>
+              ) : (
+                <button className="btn primary xl" disabled={acting} onClick={() => startQuestion(session.current_index + 1)}>
+                  {t('השאלה הבאה')}
+                </button>
+              )
+            )}
+          </div>
+        )}
+
+        {session.status === 'finished' && survey && (
+          <div className="stage-inner wide" key="finished-survey">
+            {quiz.logo_url && <img className="client-logo small" src={quiz.logo_url} alt={t('לוגו הלקוח')} />}
+            <h1 className="stage-title">📋 {quiz.title}</h1>
+            <h2 className="stage-subtitle">{t('סיכום הסקר')}</h2>
+            <SurveyConclusion questions={questions} answers={answers} participants={players.length} />
+            {isHost && (
+              <button className="btn ghost light-ghost" onClick={() => navigate('/')}>{t('חזרה לספרייה')}</button>
+            )}
+          </div>
+        )}
+
+        {session.status === 'finished' && live && (
+          <div className="stage-inner wide" key="finished-live">
+            {quiz.logo_url && <img className="client-logo small" src={quiz.logo_url} alt={t('לוגו הלקוח')} />}
+            <h1 className="stage-title">⚡ {quiz.title}</h1>
+            <h2 className="stage-subtitle">{t('סיכום החידון')}</h2>
+            <LiveConclusion questions={questions} answers={answers} participants={players.length} />
+            {isHost && (
+              <button className="btn ghost light-ghost" onClick={() => navigate('/')}>{t('חזרה לספרייה')}</button>
+            )}
+          </div>
+        )}
+
+        {session.status === 'finished' && scored && (
+          <div className="stage-inner" key="finished">
+            {quiz.logo_url && <img className="client-logo small" src={quiz.logo_url} alt={t('לוגו הלקוח')} />}
+            <h1 className="stage-title">🏆 {quiz.title}</h1>
+            <h2 className="stage-subtitle">{t('התוצאות הסופיות')}</h2>
+
+            {teamsOn ? (
+              <>
+                <div className="podium">
+                  {[1, 0, 2].map((rank) =>
+                    teamTotals[rank] ? (
+                      <div className={`podium-slot place-${rank + 1}`} key={teamTotals[rank].name}>
+                        <div className="podium-medal">{['🥇', '🥈', '🥉'][rank]}</div>
+                        <div className="podium-name">
+                          <span className="dot big" style={{ background: teamTotals[rank].color }} />{' '}
+                          {teamTotals[rank].name}
+                        </div>
+                        <div className="podium-block">
+                          <div className="podium-rank">{rank + 1}</div>
+                          <div className="podium-score">{teamTotals[rank].score}</div>
+                        </div>
                       </div>
-                    </div>
-                  ) : null
-                )}
-              </div>
-              {sorted.length > 3 && (
+                    ) : null
+                  )}
+                </div>
+                {teamTotals.length > 3 && teamScoreBoard()}
+                <p className="stage-subtitle">{t('המצטיינים האישיים:')}</p>
                 <ol className="leaderboard compact">
-                  {sorted.slice(3, 10).map((p, i) => (
+                  {sorted.slice(0, 5).map((p, i) => (
                     <li key={p.id} style={{ '--i': i }}>
-                      <span className="rank">{i + 4}</span>
-                      <span className="name">{p.nickname}</span>
+                      <span className="rank">{i + 1}</span>
+                      <span className="name">{p.nickname}{p.team ? ` · ${p.team}` : ''}</span>
                       <span className="score">{p.score}</span>
                     </li>
                   ))}
                 </ol>
-              )}
-            </>
-          )}
+              </>
+            ) : (
+              <>
+                <div className="podium">
+                  {[1, 0, 2].map((rank) =>
+                    sorted[rank] ? (
+                      <div className={`podium-slot place-${rank + 1}`} key={sorted[rank].id}>
+                        <div className="podium-medal">{['🥇', '🥈', '🥉'][rank]}</div>
+                        <div className="podium-name">{sorted[rank].nickname}</div>
+                        <div className="podium-block">
+                          <div className="podium-rank">{rank + 1}</div>
+                          <div className="podium-score">{sorted[rank].score}</div>
+                        </div>
+                      </div>
+                    ) : null
+                  )}
+                </div>
+                {sorted.length > 3 && (
+                  <ol className="leaderboard compact">
+                    {sorted.slice(3, 10).map((p, i) => (
+                      <li key={p.id} style={{ '--i': i }}>
+                        <span className="rank">{i + 4}</span>
+                        <span className="name">{p.nickname}</span>
+                        <span className="score">{p.score}</span>
+                      </li>
+                    ))}
+                  </ol>
+                )}
+              </>
+            )}
 
-          {isHost && (
-            <button className="btn ghost light-ghost" onClick={() => navigate('/')}>{t('חזרה לספרייה')}</button>
-          )}
-        </div>
-      )}
+            {isHost && (
+              <button className="btn ghost light-ghost" onClick={() => navigate('/')}>{t('חזרה לספרייה')}</button>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
