@@ -245,7 +245,7 @@ export default function Editor() {
   async function uploadLogo(file) {
     setError('')
     setUploading(true)
-    const url = await uploadToBucket('logos', file)
+    const url = await uploadToBucket('quiz-logos', file)
     setUploading(false)
     if (url) setLogoUrl(url)
   }
@@ -253,7 +253,7 @@ export default function Editor() {
   async function uploadQuestionImage(index, file) {
     setError('')
     setUploadingImageFor(index)
-    const url = await uploadToBucket('media', file)
+    const url = await uploadToBucket('quiz-media', file)
     setUploadingImageFor(null)
     if (url) {
       setQuestions((qs) =>

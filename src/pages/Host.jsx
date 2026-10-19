@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import QRCode from 'qrcode'
 import { supabase } from '../supabaseClient'
+import { DB_SCHEMA } from '../lib/dbSchema.js'
 import { playLink } from '../lib/links'
 import Elapsed from '../components/Elapsed.jsx'
 import Countdown, { useSecondsLeft } from '../components/Countdown.jsx'
@@ -227,17 +228,17 @@ export default function Host({ user }) {
       .channel(`host-${sessionId}-${Math.random().toString(36).slice(2, 10)}`)
       .on(
         'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'game_sessions', filter: `id=eq.${sessionId}` },
+        { event: 'UPDATE', schema: DB_SCHEMA, table: 'game_sessions', filter: `id=eq.${sessionId}` },
         (payload) => setSession((prev) => newerSession(prev, payload.new))
       )
       .on(
         'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'players', filter: `session_id=eq.${sessionId}` },
+        { event: 'INSERT', schema: DB_SCHEMA, table: 'players', filter: `session_id=eq.${sessionId}` },
         (payload) => queue('players', payload.new)
       )
       .on(
         'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'answers', filter: `session_id=eq.${sessionId}` },
+        { event: 'INSERT', schema: DB_SCHEMA, table: 'answers', filter: `session_id=eq.${sessionId}` },
         (payload) => queue('answers', payload.new)
       )
       .subscribe((status) => {

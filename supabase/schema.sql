@@ -5,16 +5,40 @@
 -- any database state (fresh, partial, or an older version) - it
 -- converges the database to the current shape without data loss.
 -- The files in supabase/migrations/ are NOT needed if you run
--- this file; they exist only as standalone patches.
+-- this file; they are historical patches for the quiz's former
+-- standalone project and target its `public` schema.
+--
+-- Shared NGG Supabase project: the NGG apps (quiz, boards,
+-- simulations, auction) share one project, and each keeps its
+-- tables, functions and policies in a schema of its own so their
+-- names never collide. This app's schema is `quiz`. After running
+-- the file, add `quiz` under Project Settings -> Data API ->
+-- Exposed schemas, or the API answers every request with
+-- "Invalid schema: quiz".
 -- ============================================================
 
-create extension if not exists pgcrypto;
+create extension if not exists pgcrypto with schema extensions;
+
+-- ------------------------------------------------------------
+-- App schema
+-- The grants mirror what Supabase gives the public schema: the
+-- API roles may use the schema and receive the default privileges
+-- on new objects; RLS below does the narrowing, as before.
+-- ------------------------------------------------------------
+
+create schema if not exists quiz;
+
+grant usage on schema quiz to anon, authenticated, service_role;
+
+alter default privileges in schema quiz grant all on tables    to anon, authenticated, service_role;
+alter default privileges in schema quiz grant all on sequences to anon, authenticated, service_role;
+alter default privileges in schema quiz grant all on functions to anon, authenticated, service_role;
 
 -- ------------------------------------------------------------
 -- Tables
 -- ------------------------------------------------------------
 
-create table if not exists public.folders (
+create table if not exists quiz.folders (
   id uuid primary key default gen_random_uuid(),
   owner_id uuid not null default auth.uid() references auth.users(id),
   name text not null,
@@ -22,10 +46,10 @@ create table if not exists public.folders (
   created_at timestamptz not null default now()
 );
 
-create table if not exists public.quizzes (
+create table if not exists quiz.quizzes (
   id uuid primary key default gen_random_uuid(),
   owner_id uuid not null default auth.uid() references auth.users(id),
-  folder_id uuid references public.folders(id) on delete set null,
+  folder_id uuid references quiz.folders(id) on delete set null,
   kind text not null default 'quiz'
     check (kind in ('quiz', 'survey')),   -- a survey is unscored and ends in aggregate statistics
   title text not null,
@@ -41,9 +65,9 @@ create table if not exists public.quizzes (
   updated_at timestamptz not null default now()
 );
 
-create table if not exists public.questions (
+create table if not exists quiz.questions (
   id uuid primary key default gen_random_uuid(),
-  quiz_id uuid not null references public.quizzes(id) on delete cascade,
+  quiz_id uuid not null references quiz.quizzes(id) on delete cascade,
   position int not null,
   qtype text not null default 'multiple_choice'
     check (qtype in ('multiple_choice', 'poll', 'word_cloud', 'ranking', 'hotspot', 'scale', 'true_false')),
@@ -59,9 +83,9 @@ create table if not exists public.questions (
   time_limit int                   -- optional timer in seconds; null = no limit
 );
 
-create table if not exists public.game_sessions (
+create table if not exists quiz.game_sessions (
   id uuid primary key default gen_random_uuid(),
-  quiz_id uuid not null references public.quizzes(id) on delete cascade,
+  quiz_id uuid not null references quiz.quizzes(id) on delete cascade,
   host_id uuid not null default auth.uid() references auth.users(id),
   pin text not null unique,
   status text not null default 'lobby'
@@ -71,9 +95,9 @@ create table if not exists public.game_sessions (
   created_at timestamptz not null default now()
 );
 
-create table if not exists public.players (
+create table if not exists quiz.players (
   id uuid primary key default gen_random_uuid(),
-  session_id uuid not null references public.game_sessions(id) on delete cascade,
+  session_id uuid not null references quiz.game_sessions(id) on delete cascade,
   nickname text not null,
   team text,                       -- team name when the quiz runs in team mode
   score int not null default 0,
@@ -81,11 +105,11 @@ create table if not exists public.players (
   unique (session_id, nickname)
 );
 
-create table if not exists public.answers (
+create table if not exists quiz.answers (
   id uuid primary key default gen_random_uuid(),
-  session_id uuid not null references public.game_sessions(id) on delete cascade,
-  question_id uuid not null references public.questions(id) on delete cascade,
-  player_id uuid not null references public.players(id) on delete cascade,
+  session_id uuid not null references quiz.game_sessions(id) on delete cascade,
+  question_id uuid not null references quiz.questions(id) on delete cascade,
+  player_id uuid not null references quiz.players(id) on delete cascade,
   answer_index int,                -- multiple_choice / poll: the chosen option;
                                    -- scale: the chosen value itself (min..max)
   answer jsonb,                    -- word_cloud: {text} or {texts}; poll with several
@@ -98,40 +122,40 @@ create table if not exists public.answers (
 
 -- convergence guards: bring tables created by older versions of this
 -- file up to the current shape (no-ops on a fresh database)
-alter table public.folders add column if not exists color text;
-alter table public.quizzes add column if not exists logo_url text;
-alter table public.quizzes add column if not exists folder_id uuid references public.folders(id) on delete set null;
-alter table public.quizzes add column if not exists teams_enabled boolean not null default false;
-alter table public.quizzes add column if not exists team_mode text not null default 'manual';
-alter table public.quizzes add column if not exists teams jsonb;
-alter table public.questions add column if not exists explanation text;
-alter table public.questions add column if not exists qtype text not null default 'multiple_choice';
-alter table public.questions add column if not exists meta jsonb;
-alter table public.questions alter column correct_index drop not null;
-alter table public.questions alter column options drop not null;
-alter table public.questions add column if not exists time_limit int;
-alter table public.quizzes add column if not exists kind text not null default 'quiz';
-alter table public.quizzes add column if not exists scored boolean not null default true;
-alter table public.quizzes add column if not exists anonymous boolean not null default false;
-alter table public.players add column if not exists team text;
-alter table public.answers add column if not exists answer jsonb;
-alter table public.answers alter column answer_index drop not null;
+alter table quiz.folders add column if not exists color text;
+alter table quiz.quizzes add column if not exists logo_url text;
+alter table quiz.quizzes add column if not exists folder_id uuid references quiz.folders(id) on delete set null;
+alter table quiz.quizzes add column if not exists teams_enabled boolean not null default false;
+alter table quiz.quizzes add column if not exists team_mode text not null default 'manual';
+alter table quiz.quizzes add column if not exists teams jsonb;
+alter table quiz.questions add column if not exists explanation text;
+alter table quiz.questions add column if not exists qtype text not null default 'multiple_choice';
+alter table quiz.questions add column if not exists meta jsonb;
+alter table quiz.questions alter column correct_index drop not null;
+alter table quiz.questions alter column options drop not null;
+alter table quiz.questions add column if not exists time_limit int;
+alter table quiz.quizzes add column if not exists kind text not null default 'quiz';
+alter table quiz.quizzes add column if not exists scored boolean not null default true;
+alter table quiz.quizzes add column if not exists anonymous boolean not null default false;
+alter table quiz.players add column if not exists team text;
+alter table quiz.answers add column if not exists answer jsonb;
+alter table quiz.answers alter column answer_index drop not null;
 
 -- the reads a live game makes on every phone and on the projector, so
 -- they stay index lookups as the answers table grows from event to event
 create index if not exists answers_session_question_idx
-  on public.answers (session_id, question_id, answered_at, id);
+  on quiz.answers (session_id, question_id, answered_at, id);
 create index if not exists answers_player_idx
-  on public.answers (player_id);
+  on quiz.answers (player_id);
 create index if not exists players_session_score_idx
-  on public.players (session_id, score desc);
+  on quiz.players (session_id, score desc);
 create index if not exists questions_quiz_position_idx
-  on public.questions (quiz_id, position);
+  on quiz.questions (quiz_id, position);
 
 -- keep the timer inside the range the editor offers
 do $$
 begin
-  alter table public.questions
+  alter table quiz.questions
     add constraint questions_time_limit_range
     check (time_limit is null or (time_limit >= 5 and time_limit <= 600));
 exception when duplicate_object then null;
@@ -139,7 +163,7 @@ end $$;
 
 do $$
 begin
-  alter table public.quizzes
+  alter table quiz.quizzes
     add constraint quizzes_kind_check check (kind in ('quiz', 'survey'));
 exception when duplicate_object then null;
 end $$;
@@ -148,7 +172,7 @@ end $$;
 -- and teams only make sense with one (teams => scored)
 do $$
 begin
-  alter table public.quizzes
+  alter table quiz.quizzes
     add constraint quizzes_live_settings
     check ((not scored or not anonymous) and (scored or not teams_enabled));
 exception when duplicate_object then null;
@@ -156,8 +180,8 @@ end $$;
 
 -- the question types grew (scale, then true_false), so the constraint is
 -- replaced rather than added: an older database still carries the older list
-alter table public.questions drop constraint if exists questions_qtype_check;
-alter table public.questions
+alter table quiz.questions drop constraint if exists questions_qtype_check;
+alter table quiz.questions
   add constraint questions_qtype_check
   check (qtype in ('multiple_choice', 'poll', 'word_cloud', 'ranking', 'hotspot', 'scale', 'true_false'));
 
@@ -166,7 +190,7 @@ alter table public.questions
 -- explicit null test matters: a CHECK that evaluates to null passes
 do $$
 begin
-  alter table public.questions
+  alter table quiz.questions
     add constraint questions_true_false_shape
     check (case when qtype = 'true_false'
       then options is not null and jsonb_array_length(options) = 2
@@ -192,11 +216,11 @@ end $$;
 -- wrong, but every answer earns 0 points.
 -- ------------------------------------------------------------
 
-create or replace function public.score_answer()
+create or replace function quiz.score_answer()
 returns trigger
 language plpgsql
 security definer
-set search_path = public
+set search_path = quiz
 as $$
 declare
   q record;
@@ -212,14 +236,14 @@ declare
   sim numeric;
   dist numeric;
 begin
-  select quiz_id, qtype, correct_index, options, meta, time_limit into q from public.questions where id = new.question_id;
-  select status, question_started_at into s from public.game_sessions where id = new.session_id;
+  select quiz_id, qtype, correct_index, options, meta, time_limit into q from quiz.questions where id = new.question_id;
+  select status, question_started_at into s from quiz.game_sessions where id = new.session_id;
 
   if s.status is distinct from 'question' then
     raise exception 'session is not accepting answers';
   end if;
 
-  select scored into quiz_scored from public.quizzes where id = q.quiz_id;
+  select scored into quiz_scored from quiz.quizzes where id = q.quiz_id;
 
   elapsed := greatest(0, extract(epoch from (now() - s.question_started_at)));
 
@@ -341,19 +365,19 @@ begin
 end;
 $$;
 
-drop trigger if exists answers_score on public.answers;
+drop trigger if exists answers_score on quiz.answers;
 create trigger answers_score
-  before insert on public.answers
-  for each row execute function public.score_answer();
+  before insert on quiz.answers
+  for each row execute function quiz.score_answer();
 
-create or replace function public.apply_points()
+create or replace function quiz.apply_points()
 returns trigger
 language plpgsql
 security definer
-set search_path = public
+set search_path = quiz
 as $$
 begin
-  update public.players set score = score + new.points where id = new.player_id;
+  update quiz.players set score = score + new.points where id = new.player_id;
   return new;
 end;
 $$;
@@ -361,15 +385,15 @@ $$;
 -- only an answer that earned points touches its player: live mode, polls
 -- and surveys would otherwise rewrite a players row (and send Realtime a
 -- change to process) for every answer, to add zero
-drop trigger if exists answers_apply_points on public.answers;
+drop trigger if exists answers_apply_points on quiz.answers;
 create trigger answers_apply_points
-  after insert on public.answers
+  after insert on quiz.answers
   for each row
   when (new.points <> 0)
-  execute function public.apply_points();
+  execute function quiz.apply_points();
 
 -- keep quizzes.updated_at fresh
-create or replace function public.touch_updated_at()
+create or replace function quiz.touch_updated_at()
 returns trigger language plpgsql as $$
 begin
   new.updated_at := now();
@@ -377,10 +401,10 @@ begin
 end;
 $$;
 
-drop trigger if exists quizzes_touch on public.quizzes;
+drop trigger if exists quizzes_touch on quiz.quizzes;
 create trigger quizzes_touch
-  before update on public.quizzes
-  for each row execute function public.touch_updated_at();
+  before update on quiz.quizzes
+  for each row execute function quiz.touch_updated_at();
 
 -- ------------------------------------------------------------
 -- start_question: sets the question start time with the DATABASE
@@ -389,17 +413,17 @@ create trigger quizzes_touch
 -- question that is already open changes nothing.
 -- ------------------------------------------------------------
 
-create or replace function public.start_question(p_session uuid, p_index int)
+create or replace function quiz.start_question(p_session uuid, p_index int)
 returns void
 language plpgsql
 security definer
-set search_path = public
+set search_path = quiz
 as $$
 declare
   s record;
 begin
   select host_id, status, current_index into s
-    from public.game_sessions
+    from quiz.game_sessions
    where id = p_session
      for update;
 
@@ -413,7 +437,7 @@ begin
     return;
   end if;
 
-  update public.game_sessions
+  update quiz.game_sessions
      set status = 'question',
          current_index = p_index,
          question_started_at = now()
@@ -421,7 +445,7 @@ begin
 end;
 $$;
 
-grant execute on function public.start_question(uuid, int) to authenticated;
+grant execute on function quiz.start_question(uuid, int) to authenticated;
 
 -- ------------------------------------------------------------
 -- Live-session reads for phones
@@ -432,24 +456,24 @@ grant execute on function public.start_question(uuid, int) to authenticated;
 -- the projector run on the same clock as the scoring.
 -- ------------------------------------------------------------
 
-create or replace function public.player_standing(p_player uuid)
+create or replace function quiz.player_standing(p_player uuid)
 returns table (score int, rank int, total int)
 language sql
 stable
-set search_path = public
+set search_path = quiz
 as $$
   select me.score,
-         (select count(*)::int + 1 from public.players p
+         (select count(*)::int + 1 from quiz.players p
            where p.session_id = me.session_id and p.score > me.score),
-         (select count(*)::int from public.players p
+         (select count(*)::int from quiz.players p
            where p.session_id = me.session_id)
-    from public.players me
+    from quiz.players me
    where me.id = p_player
 $$;
 
-grant execute on function public.player_standing(uuid) to anon, authenticated;
+grant execute on function quiz.player_standing(uuid) to anon, authenticated;
 
-create or replace function public.server_time()
+create or replace function quiz.server_time()
 returns timestamptz
 language sql
 stable
@@ -457,7 +481,7 @@ as $$
   select now()
 $$;
 
-grant execute on function public.server_time() to anon, authenticated;
+grant execute on function quiz.server_time() to anon, authenticated;
 
 -- ------------------------------------------------------------
 -- Admin access: any account with an @nggconsult.com email.
@@ -466,7 +490,7 @@ grant execute on function public.server_time() to anon, authenticated;
 -- Players never authenticate, so none of this affects them.
 -- ------------------------------------------------------------
 
-create or replace function public.is_admin()
+create or replace function quiz.is_admin()
 returns boolean
 language sql
 stable
@@ -474,11 +498,11 @@ as $$
   select coalesce(auth.jwt() ->> 'email', '') ilike '%@nggconsult.com'
 $$;
 
-create or replace function public.enforce_admin_email_domain()
+create or replace function quiz.enforce_admin_email_domain()
 returns trigger
 language plpgsql
 security definer
-set search_path = public
+set search_path = quiz
 as $$
 begin
   if new.email is null or new.email not ilike '%@nggconsult.com' then
@@ -488,10 +512,12 @@ begin
 end;
 $$;
 
-drop trigger if exists enforce_admin_email_domain on auth.users;
-create trigger enforce_admin_email_domain
+-- auth.users is shared by every app in the NGG project, so the trigger
+-- name carries this app's prefix
+drop trigger if exists quiz_enforce_admin_email_domain on auth.users;
+create trigger quiz_enforce_admin_email_domain
   before insert on auth.users
-  for each row execute function public.enforce_admin_email_domain();
+  for each row execute function quiz.enforce_admin_email_domain();
 
 -- ------------------------------------------------------------
 -- Row Level Security
@@ -499,111 +525,115 @@ create trigger enforce_admin_email_domain
 -- sessions. Players (anon) may read game data, join and answer.
 -- ------------------------------------------------------------
 
-alter table public.folders enable row level security;
-alter table public.quizzes enable row level security;
-alter table public.questions enable row level security;
-alter table public.game_sessions enable row level security;
-alter table public.players enable row level security;
-alter table public.answers enable row level security;
+alter table quiz.folders enable row level security;
+alter table quiz.quizzes enable row level security;
+alter table quiz.questions enable row level security;
+alter table quiz.game_sessions enable row level security;
+alter table quiz.players enable row level security;
+alter table quiz.answers enable row level security;
 
 -- folders: shared library structure, only the creator manages
-drop policy if exists "folders_select" on public.folders;
-create policy "folders_select" on public.folders
+drop policy if exists "folders_select" on quiz.folders;
+create policy "folders_select" on quiz.folders
   for select using (true);
-drop policy if exists "folders_insert" on public.folders;
-create policy "folders_insert" on public.folders
-  for insert to authenticated with check (public.is_admin() and owner_id = auth.uid());
-drop policy if exists "folders_update" on public.folders;
-create policy "folders_update" on public.folders
+drop policy if exists "folders_insert" on quiz.folders;
+create policy "folders_insert" on quiz.folders
+  for insert to authenticated with check (quiz.is_admin() and owner_id = auth.uid());
+drop policy if exists "folders_update" on quiz.folders;
+create policy "folders_update" on quiz.folders
   for update to authenticated using (owner_id = auth.uid());
-drop policy if exists "folders_delete" on public.folders;
-create policy "folders_delete" on public.folders
+drop policy if exists "folders_delete" on quiz.folders;
+create policy "folders_delete" on quiz.folders
   for delete to authenticated using (owner_id = auth.uid());
 
 -- quizzes: shared library - every admin can read and edit every
 -- quiz; deletion stays with the quiz owner
-drop policy if exists "quizzes_select" on public.quizzes;
-create policy "quizzes_select" on public.quizzes
+drop policy if exists "quizzes_select" on quiz.quizzes;
+create policy "quizzes_select" on quiz.quizzes
   for select using (true);
-drop policy if exists "quizzes_insert" on public.quizzes;
-create policy "quizzes_insert" on public.quizzes
-  for insert to authenticated with check (public.is_admin() and owner_id = auth.uid());
-drop policy if exists "quizzes_update" on public.quizzes;
-create policy "quizzes_update" on public.quizzes
-  for update to authenticated using (public.is_admin());
-drop policy if exists "quizzes_delete" on public.quizzes;
-create policy "quizzes_delete" on public.quizzes
+drop policy if exists "quizzes_insert" on quiz.quizzes;
+create policy "quizzes_insert" on quiz.quizzes
+  for insert to authenticated with check (quiz.is_admin() and owner_id = auth.uid());
+drop policy if exists "quizzes_update" on quiz.quizzes;
+create policy "quizzes_update" on quiz.quizzes
+  for update to authenticated using (quiz.is_admin());
+drop policy if exists "quizzes_delete" on quiz.quizzes;
+create policy "quizzes_delete" on quiz.quizzes
   for delete to authenticated using (owner_id = auth.uid());
 
 -- questions: readable by all (players need option texts),
 -- editable by every admin (part of editing any quiz)
-drop policy if exists "questions_select" on public.questions;
-create policy "questions_select" on public.questions
+drop policy if exists "questions_select" on quiz.questions;
+create policy "questions_select" on quiz.questions
   for select using (true);
-drop policy if exists "questions_insert" on public.questions;
-create policy "questions_insert" on public.questions
-  for insert to authenticated with check (public.is_admin());
-drop policy if exists "questions_update" on public.questions;
-create policy "questions_update" on public.questions
-  for update to authenticated using (public.is_admin());
-drop policy if exists "questions_delete" on public.questions;
-create policy "questions_delete" on public.questions
-  for delete to authenticated using (public.is_admin());
+drop policy if exists "questions_insert" on quiz.questions;
+create policy "questions_insert" on quiz.questions
+  for insert to authenticated with check (quiz.is_admin());
+drop policy if exists "questions_update" on quiz.questions;
+create policy "questions_update" on quiz.questions
+  for update to authenticated using (quiz.is_admin());
+drop policy if exists "questions_delete" on quiz.questions;
+create policy "questions_delete" on quiz.questions
+  for delete to authenticated using (quiz.is_admin());
 
 -- game sessions: anyone can look up by PIN, only the host controls
-drop policy if exists "sessions_select" on public.game_sessions;
-create policy "sessions_select" on public.game_sessions
+drop policy if exists "sessions_select" on quiz.game_sessions;
+create policy "sessions_select" on quiz.game_sessions
   for select using (true);
-drop policy if exists "sessions_insert" on public.game_sessions;
-create policy "sessions_insert" on public.game_sessions
-  for insert to authenticated with check (public.is_admin() and host_id = auth.uid());
-drop policy if exists "sessions_update" on public.game_sessions;
-create policy "sessions_update" on public.game_sessions
+drop policy if exists "sessions_insert" on quiz.game_sessions;
+create policy "sessions_insert" on quiz.game_sessions
+  for insert to authenticated with check (quiz.is_admin() and host_id = auth.uid());
+drop policy if exists "sessions_update" on quiz.game_sessions;
+create policy "sessions_update" on quiz.game_sessions
   for update to authenticated using (host_id = auth.uid());
 
 -- players: anyone may join a running session; scores change only
 -- through the security-definer trigger, never directly by clients
-drop policy if exists "players_select" on public.players;
-create policy "players_select" on public.players
+drop policy if exists "players_select" on quiz.players;
+create policy "players_select" on quiz.players
   for select using (true);
-drop policy if exists "players_insert" on public.players;
-create policy "players_insert" on public.players
+drop policy if exists "players_insert" on quiz.players;
+create policy "players_insert" on quiz.players
   for insert with check (
-    exists (select 1 from public.game_sessions s
+    exists (select 1 from quiz.game_sessions s
             where s.id = session_id and s.status <> 'finished')
   );
 
 -- answers: players submit while a question is open
-drop policy if exists "answers_select" on public.answers;
-create policy "answers_select" on public.answers
+drop policy if exists "answers_select" on quiz.answers;
+create policy "answers_select" on quiz.answers
   for select using (true);
-drop policy if exists "answers_insert" on public.answers;
-create policy "answers_insert" on public.answers
+drop policy if exists "answers_insert" on quiz.answers;
+create policy "answers_insert" on quiz.answers
   for insert with check (
-    exists (select 1 from public.game_sessions s
+    exists (select 1 from quiz.game_sessions s
             where s.id = session_id and s.status = 'question')
   );
 
 -- ------------------------------------------------------------
 -- Storage: public bucket for client logos
+-- Bucket ids and storage.objects policy names are shared by every
+-- app in the NGG project, so both carry the quiz prefix.
 -- ------------------------------------------------------------
 
 insert into storage.buckets (id, name, public)
-values ('logos', 'logos', true)
+values ('quiz-logos', 'quiz-logos', true)
 on conflict (id) do nothing;
 
 -- question images (hotspot questions)
 insert into storage.buckets (id, name, public)
-values ('media', 'media', true)
+values ('quiz-media', 'quiz-media', true)
 on conflict (id) do nothing;
 
-drop policy if exists "logos_read" on storage.objects;
-create policy "logos_read" on storage.objects
-  for select using (bucket_id in ('logos', 'media'));
+drop policy if exists "quiz_storage_read" on storage.objects;
+create policy "quiz_storage_read" on storage.objects
+  for select using (bucket_id in ('quiz-logos', 'quiz-media'));
 
-drop policy if exists "logos_write" on storage.objects;
-create policy "logos_write" on storage.objects
-  for insert to authenticated with check (bucket_id in ('logos', 'media'));
+-- uploads stay with admins (@nggconsult.com accounts): other
+-- accounts in the shared project have no business in these buckets
+drop policy if exists "quiz_storage_write" on storage.objects;
+create policy "quiz_storage_write" on storage.objects
+  for insert to authenticated with check (bucket_id in ('quiz-logos', 'quiz-media') and quiz.is_admin());
 
 -- ------------------------------------------------------------
 -- Realtime: broadcast changes for the live game screens
@@ -611,18 +641,18 @@ create policy "logos_write" on storage.objects
 
 do $$
 begin
-  alter publication supabase_realtime add table public.game_sessions;
+  alter publication supabase_realtime add table quiz.game_sessions;
 exception when duplicate_object then null;
 end $$;
 
 do $$
 begin
-  alter publication supabase_realtime add table public.players;
+  alter publication supabase_realtime add table quiz.players;
 exception when duplicate_object then null;
 end $$;
 
 do $$
 begin
-  alter publication supabase_realtime add table public.answers;
+  alter publication supabase_realtime add table quiz.answers;
 exception when duplicate_object then null;
 end $$;

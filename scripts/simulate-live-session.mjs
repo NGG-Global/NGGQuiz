@@ -41,6 +41,7 @@ import readline from 'node:readline/promises'
 import { fileURLToPath } from 'node:url'
 import { createClient } from '@supabase/supabase-js'
 import { followSession, reconnectAfterMs } from '../src/lib/liveSync.js'
+import { DB_SCHEMA } from '../src/lib/dbSchema.js'
 import { isMultiSelect, wordEntries } from '../src/lib/multiAnswer.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -189,6 +190,7 @@ class SimulatedPhone {
     // the site's spread-out reconnect back-off
     this.client = createClient(ctx.url, ctx.key, {
       auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+      db: { schema: DB_SCHEMA },
       realtime: { reconnectAfterMs },
     })
   }
@@ -328,7 +330,10 @@ async function main() {
     process.exit(1)
   }
 
-  const lookup = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } })
+  const lookup = createClient(url, key, {
+    auth: { persistSession: false, autoRefreshToken: false },
+    db: { schema: DB_SCHEMA },
+  })
   const { data: session, error: sErr } = await lookup
     .from('game_sessions')
     .select('*')

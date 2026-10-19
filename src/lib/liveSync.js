@@ -4,6 +4,8 @@
 // scripts/, so the simulator measures the behaviour the hall actually gets.
 // Plain JavaScript with no build-time imports, so Node can load it too.
 
+import { DB_SCHEMA } from './dbSchema.js'
+
 // ---------- Realtime reconnect back-off ----------
 
 // After a Wi-Fi drop in the hall, or a Realtime disconnect for going over
@@ -172,7 +174,7 @@ export function followSession(client, sessionId, { onState, onHealth, label = 'p
     .channel(topic)
     .on(
       'postgres_changes',
-      { event: 'UPDATE', schema: 'public', table: 'game_sessions', filter: `id=eq.${sessionId}` },
+      { event: 'UPDATE', schema: DB_SCHEMA, table: 'game_sessions', filter: `id=eq.${sessionId}` },
       (payload) => deliver(payload.new, 'realtime')
     )
     .subscribe((status) => {
