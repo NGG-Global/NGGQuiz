@@ -33,7 +33,13 @@ export default function Login({ session }) {
         return
       }
       setBusy(true)
-      const { data, error } = await supabase.auth.signUp({ email: email.trim(), password })
+      // the Supabase project is shared by several NGG apps and has one Site
+      // URL, so the confirmation link has to name this app explicitly
+      const { data, error } = await supabase.auth.signUp({
+        email: email.trim(),
+        password,
+        options: { emailRedirectTo: window.location.origin + window.location.pathname },
+      })
       setBusy(false)
       if (error) {
         setError(
